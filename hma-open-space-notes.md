@@ -16,6 +16,13 @@ Survey123 form for any property that still needs a visit.
 - **Acquired properties**: embedded directly in the page as `ACQUIRED_RAW` (not
   fetched — there's no live service for this list). Regenerate/re-embed if the
   acquisitions list itself changes; it does not update from the two feature layers.
+  Now sourced from `TN_properties_with_county_2.csv` (Region/Address/City/Lat/Lng/
+  **County**, 1,300 rows — same 1,300 properties as the original
+  `TN_properties_acquired.csv`, just with a County column added; verified row-for-row
+  identical region/address/city/lat/lng, no blank counties). County is shown on every
+  property's card and in its detail sheet directly from this list now — it's no longer
+  limited to properties that already have a matched survey record (survey-record
+  county is still used as a fallback if a given row's list county were ever blank).
 - **Survey layer** (`HMA_Open_Space_Monitoring_VL_dashboard/FeatureServer/0`,
   `services1.arcgis.com/kILp9lqGUeOhnDbI` — same AGOL org as PREDS): token-secured.
   Field schema (`SURVEY_FIELDS` in the code) was confirmed against a live export the

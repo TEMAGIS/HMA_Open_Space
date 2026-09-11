@@ -726,7 +726,29 @@ function loadStoredToken() {
     return t;
   } catch { return null; }
 }
-function saveToken(t) { TOKEN = t; localStorage.setItem(CONFIG.tokenKey, JSON.stringify(t)); }
+// Wrapped in try/catch (2026-09-12 fix) — this app is hosted on the same
+// origin (temagis.github.io) as PREDS Summary/Districts, and localStorage
+// quota is per-ORIGIN, not per-path/app. Those apps cache much larger
+// payloads (full assessment lists with attachments metadata), so it's
+// possible for the origin's total storage to already be at quota before
+// this app ever writes anything — in which case even this small token
+// write throws QuotaExceededError. Previously that exception propagated
+// out of saveToken() and was caught by the OAuth callback's own
+// try/catch, which showed it as a raw "Failed to execute 'setItem'..."
+// sign-in error and never proceeded to startApp() — sign-in looked
+// broken even though the token exchange itself had actually succeeded.
+// TOKEN is already set in memory above regardless, so the app can and
+// should keep working for this session even if the token can't be
+// cached to disk; the only real consequence is having to sign in again
+// on the next visit.
+function saveToken(t) {
+  TOKEN = t;
+  try {
+    localStorage.setItem(CONFIG.tokenKey, JSON.stringify(t));
+  } catch (err) {
+    console.warn('[HMA] Could not persist sign-in token to localStorage (quota likely exceeded on this shared origin) — continuing without it; you may need to sign in again next visit:', err);
+  }
+}
 function clearStoredToken() {
   TOKEN = null;
   localStorage.removeItem(CONFIG.tokenKey);

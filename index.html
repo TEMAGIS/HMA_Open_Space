@@ -967,8 +967,8 @@ let surveyRecords = [];                 // raw survey layer features, current se
 let activeStatus = 'all';               // 'all' | 'surveyed' | 'unsurveyed'
 let activeRegions = new Set();          // multi-select, empty == all regions
 let activeBuffer = null, searchTerm = '', selectedId = null;
-let activeBoundary = null;              // null | 'parcels'
-let showSurveyPoints = false;           // optional overlay of raw survey-layer points
+let showParcels = true;                 // TN Property Parcels boundary layer — on by default
+let showSurveyPoints = true;            // overlay of raw survey-layer points — on by default
 let boundaryLayerGroup = null, surveyPointsLayerGroup = null;
 let boundaryMoveHandler = null, boundaryFetchToken = 0;
 let renderedList = [];
@@ -1230,11 +1230,13 @@ document.addEventListener('click', (e) => {
 function buildLayersMenu() {
   document.getElementById('layers-menu').innerHTML = `
     <div class="layers-menu-label">Map layers</div>
-    <button class="bndt active" data-boundary="" aria-pressed="true" onclick="setBoundaryLayer(this, null)">No parcel boundaries</button>
-    <button class="bndt" data-boundary="parcels" aria-pressed="false" onclick="setBoundaryLayer(this, 'parcels')">TN Property Parcels</button>
-    <label class="layers-menu-toggle-row" id="survey-points-toggle-row">
+    <label class="layers-menu-toggle-row ${showParcels ? 'active' : ''}" id="parcels-toggle-row">
+      <span>TN Property Parcels</span>
+      <span class="switch"><input type="checkbox" id="parcels-toggle" ${showParcels ? 'checked' : ''} onchange="toggleParcelsLayer(this.checked)"><span class="switch-track"></span></span>
+    </label>
+    <label class="layers-menu-toggle-row ${showSurveyPoints ? 'active' : ''}" id="survey-points-toggle-row">
       <span>Show survey points</span>
-      <span class="switch"><input type="checkbox" id="survey-points-toggle" onchange="toggleSurveyPointsLayer(this.checked)"><span class="switch-track"></span></span>
+      <span class="switch"><input type="checkbox" id="survey-points-toggle" ${showSurveyPoints ? 'checked' : ''} onchange="toggleSurveyPointsLayer(this.checked)"><span class="switch-track"></span></span>
     </label>`;
 }
 function toggleFilterDrawer(forceClose = false) {
@@ -1592,27 +1594,27 @@ function clearBoundaryLayer() {
   setBoundaryHint(false);
 }
 function debounce(fn, wait) { let t = null; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); }; }
-async function setBoundaryLayer(el, key) {
-  document.querySelectorAll('.bndt[data-boundary]').forEach(c => { c.classList.remove('active'); c.setAttribute('aria-pressed', 'false'); });
-  el.classList.add('active'); el.setAttribute('aria-pressed', 'true');
-  activeBoundary = key;
-  clearBoundaryLayer();
+async function toggleParcelsLayer(on) {
+  showParcels = on;
+  const row = document.getElementById('parcels-toggle-row');
+  if (row) row.classList.toggle('active', on);
   updateLayersToggleLabel();
-  if (key === 'parcels') await showParcelsLayer();
+  if (on) { await showParcelsLayer(); }
+  else { clearBoundaryLayer(); }
 }
 function updateLayersToggleLabel() {
   const btn = document.getElementById('layers-toggle');
   if (!btn) return;
-  const on = !!activeBoundary || showSurveyPoints;
+  const on = showParcels || showSurveyPoints;
   btn.classList.toggle('has-layer', on);
   const label = btn.querySelector('.layers-label');
-  if (label) label.textContent = activeBoundary === 'parcels' ? 'Parcels' : (showSurveyPoints ? 'Survey Pts' : 'Layers');
+  if (label) label.textContent = (showParcels && showSurveyPoints) ? 'Parcels + Pts' : (showParcels ? 'Parcels' : (showSurveyPoints ? 'Survey Pts' : 'Layers'));
 }
 async function showParcelsLayer() {
   const myFetch = ++boundaryFetchToken;
-  const stillWanted = () => myFetch === boundaryFetchToken && activeBoundary === 'parcels';
+  const stillWanted = () => myFetch === boundaryFetchToken && showParcels;
   if (!boundaryMoveHandler) {
-    boundaryMoveHandler = debounce(() => { if (activeBoundary === 'parcels') showParcelsLayer(); }, 600);
+    boundaryMoveHandler = debounce(() => { if (showParcels) showParcelsLayer(); }, 600);
     map.on('moveend', boundaryMoveHandler);
   }
   if (map.getZoom() < PARCELS_MIN_ZOOM) {
@@ -1638,12 +1640,53 @@ async function showParcelsLayer() {
     if (stillWanted()) setBoundaryHint(true, 'Could not load parcels — check your connection/permissions', true);
   }
 }
+// Pixel radius, in screen space, within which a click "on" the parcels
+// layer is instead treated as a click on a nearby point feature (an
+// acquired-property marker or a survey-point dot). Property markers
+// already render in Leaflet's markerPane (z-index 600), above the
+// parcels polygons' overlayPane (400), so a dead-center click on a
+// marker is never actually caught here at all — the marker's own click
+// handler fires first and this code never runs. This is a safety net
+// for near-miss clicks that land just off a small marker's icon onto
+// the (usually much larger) parcel polygon underneath it, which is easy
+// to do especially on a touchscreen in the field.
+const POINT_CLICK_PRIORITY_PX = 16;
+function nearestPointFeature(containerPoint) {
+  let best = null, bestDist = Infinity;
+  for (const id in markers) {
+    const d = map.latLngToContainerPoint(markers[id].getLatLng()).distanceTo(containerPoint);
+    if (d < bestDist) { bestDist = d; best = { kind: 'property', id, distance: d }; }
+  }
+  if (showSurveyPoints && surveyPointsLayerGroup) {
+    surveyPointsLayerGroup.eachLayer(mk => {
+      const d = map.latLngToContainerPoint(mk.getLatLng()).distanceTo(containerPoint);
+      if (d < bestDist) { bestDist = d; best = { kind: 'survey', marker: mk, distance: d }; }
+    });
+  }
+  return best;
+}
 function renderParcelsFeatureCollection(fc) {
   if (boundaryLayerGroup) { map.removeLayer(boundaryLayerGroup); boundaryLayerGroup = null; }
   boundaryLayerGroup = L.geoJSON(fc, {
     style: () => ({ color: '#616161', weight: 1.5, opacity: 0.85, fillColor: '#616161', fillOpacity: 0.04 }),
     onEachFeature: (feature, layer) => {
-      layer.bindPopup(() => buildParcelPopupHtml(feature), { maxWidth: 280, autoPan: true, autoPanPaddingTopLeft: [130, 60], autoPanPaddingBottomRight: [70, 70] });
+      // Not bindPopup() — a parcel polygon can span a much bigger screen
+      // area than a marker dot, so its click needs to defer to a nearby
+      // point feature first (see POINT_CLICK_PRIORITY_PX above) before
+      // ever showing its own popup.
+      layer.on('click', (e) => {
+        const nearest = nearestPointFeature(e.containerPoint);
+        if (nearest && nearest.distance <= POINT_CLICK_PRIORITY_PX) {
+          L.DomEvent.stop(e);
+          if (nearest.kind === 'property') selectProperty(nearest.id);
+          else nearest.marker.openPopup();
+          return;
+        }
+        L.popup({ maxWidth: 280, autoPan: true, autoPanPaddingTopLeft: [130, 60], autoPanPaddingBottomRight: [70, 70] })
+          .setLatLng(e.latlng)
+          .setContent(buildParcelPopupHtml(feature))
+          .openOn(map);
+      });
       layer.on('mouseover', () => layer.setStyle({ weight: 3, fillOpacity: 0.14 }));
       layer.on('mouseout',  () => layer.setStyle({ color: '#616161', weight: 1.5, opacity: 0.85, fillColor: '#616161', fillOpacity: 0.04 }));
     },
@@ -1664,11 +1707,10 @@ function buildParcelPopupHtml(feature) {
     </div>`;
 }
 // ════════════════════════════════════════════════════════════════
-//  SURVEY POINTS OVERLAY — optional, shows the raw survey-layer records
-//  (already fetched in full for correlation — see fetchSurveyRecords())
-//  as small reference dots on the map, independent of the acquired-
-//  property markers above. Off by default to keep the map focused on
-//  the acquisition list; useful for spot-checking the correlation.
+//  SURVEY POINTS OVERLAY — shows the raw survey-layer records (already
+//  fetched in full for correlation — see fetchSurveyRecords()) as small
+//  reference dots on the map, independent of the acquired-property
+//  markers above; useful for spot-checking the correlation.
 // ════════════════════════════════════════════════════════════════
 function toggleSurveyPointsLayer(on) {
   showSurveyPoints = on;
@@ -1680,6 +1722,17 @@ function toggleSurveyPointsLayer(on) {
   const layers = surveyRecords
     .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0))
     .map(r => L.circleMarker([r.lat, r.lng], {
+      // pane: 'markerPane' (2026-09-12 fix) — a plain circleMarker
+      // defaults to the SAME pane the parcels polygons use
+      // ('overlayPane'), where z-order is just DOM/add order, not a
+      // fixed stacking rule. The parcels layer re-renders on every
+      // pan/zoom (it's viewport-scoped — see PARCELS BOUNDARY LAYER
+      // notes) and each re-render re-appends its shapes, so it would
+      // periodically end up drawn (and clickable) on top of these dots.
+      // Explicitly using markerPane — the same higher pane the acquired-
+      // property markers already use — keeps survey points reliably
+      // above parcels regardless of render order.
+      pane: 'markerPane',
       radius: 5, color: '#003a8c', weight: 1.5, fillColor: '#5b8def', fillOpacity: 0.85,
     }).bindPopup(() => buildSurveyPointPopupHtml(r), { maxWidth: 260 }));
   surveyPointsLayerGroup = L.layerGroup(layers).addTo(map);
@@ -2063,7 +2116,14 @@ async function startApp() {
   revealApp();
   applyFiltersAndRender();
   fitToProperties();
+  // Both map-layer toggles default to on (per user request) — Parcels is
+  // zoom-gated (see PARCELS_MIN_ZOOM) so this is a no-op/hint-only until
+  // the user zooms in from the initial statewide view; Survey Points
+  // needs surveyRecords populated first, so it's turned on after the
+  // fetch below rather than here.
+  if (showParcels) await showParcelsLayer();
   await fetchSurveyRecords();
+  if (showSurveyPoints) toggleSurveyPointsLayer(true);
   fetchSurveyLayerMeta();
   if (navigator.geolocation) navigator.geolocation.getCurrentPosition(onLocationSuccess, () => useLastKnownLocation(), { timeout: 5000 });
   else useLastKnownLocation();

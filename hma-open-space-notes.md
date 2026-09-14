@@ -471,6 +471,94 @@ online-doesn't-matter offline-CSV-fallback pattern.
   above are informational, surfaced here so they're not a surprise the
   first time this export is used.
 
+## Third correlation tier: partial address match
+Added 2026-09-14. Real, live example the user flagged with screenshots: an
+acquisition-list point ("7505 ANTIETAM", Murfreesboro) sat right next to a
+survey point ("7505 Antietam Ln") — obviously the same property — but
+showed **Not Surveyed** on the acquisition side and **No address match on
+acquired list** on the survey side. Root cause: the acquisition list's
+address is missing its street-type suffix entirely ("ANTIETAM" vs.
+"Antietam Ln"), so `correlationKey()`'s exact normalized-string comparison
+never lined the two up, and the two points were apparently just far enough
+apart that the existing 150 ft plain-proximity check also missed it.
+
+`correlateAll()` now has a third, last-resort correlation tier for exactly
+this gap:
+
+- **`streetCore(streetAddr)`** (near `correlationKey()`) splits an address
+  into `{ houseNum, core }` — the leading house number, and everything
+  else with a trailing street-type suffix (ST/AVE/DR/RD/LN/CT/BLVD/CIR/PL/
+  HWY/ALY/TRL/PKWY/TER, i.e. `STREET_TYPE_SUFFIXES`) stripped off if
+  present. Deliberately does **not** strip directionals (N/S/E/W/NE/NW/SE/
+  SW) — "700 N Main St" and "700 S Main St" are genuinely different
+  streets, not a formatting gap, so those must NOT be treated as a match.
+- **The PARTIAL ADDRESS MATCH pass** (inside `correlateAll()`'s per-
+  property loop, precomputing each survey record's `streetCore()` once up
+  front rather than per pair): for each acquired property, finds the
+  nearest survey record within `CONFIG.partialMatchFeet` (default **600
+  ft** — looser than the 150 ft plain-proximity tier, tunable) whose
+  `houseNum` and `core` both exactly match the property's, AND whose city
+  matches. Only used as a last resort — if the property already matched by
+  exact address text or plain proximity, the partial tier never overrides
+  it (`prop.matchMethods` gets `'partial'` added only when neither of the
+  other two fired).
+- Surfaces the same way the other two tiers do: `p.surveyed`,
+  `p.matchMethods` (now `'address'` | `'proximity'` | `'partial'`),
+  `p.matchDistanceFt`, `p.surveyRecord` all populate normally.
+  `matchMethodLabel(p)` describes it as "a close, partial address match —
+  house number and street name agree, but the address text doesn't line
+  up exactly" wherever match method is shown (detail sheet banner/Matched
+  By row).
+- **Survey Points map layer** now has a matching third visual state — see
+  `surveyMatchState(r)` (`'matched'` | `'partial'` | `'none'`, the single
+  source of truth `surveyPointIcon()`, `buildSurveyPointPopupHtml()`, and
+  the Survey Points filter all key off): a survey record picked up by
+  *some* property's partial match gets `r.partialMatched = true`
+  (re-derived every `correlateAll()` run) and now shows **blue**
+  (`SURVEY_PARTIAL_COLOR`, `#2563EB`) instead of yellow, with its own
+  popup label ("Partial match — nearby acquisition record, address text
+  differs"). The Survey Points (map) filter drawer now has three buttons
+  instead of two — All / Partial Match / No Address Match — each with a
+  live count. Deliberately did **not** fold partial matches into
+  `r.addressMatched` itself — that flag stays a pure exact-text-match
+  signal, since the Survey Report export's "Matches Acquisition List"
+  column and its duplicate-detection logic are specifically about address
+  **text** quality and shouldn't quietly change meaning.
+- Validated the matching predicate (house number + core street name
+  comparison) against the exact reported case plus edge cases (different
+  house number, different directional, different street entirely) via a
+  standalone Node script before shipping — all behaved as intended,
+  including correctly rejecting "700 N Main St" vs. "700 S Main St".
+
+## Survey point marker style + click behavior
+Two related fixes, 2026-09-14, both from user feedback on a screenshot
+where a selected acquisition marker (solid green circle, white check) sat
+right next to its matched survey point (also, at the time, a solid green
+circle with a white check) — hard to tell apart at a glance, especially
+selected/halo-highlighted.
+
+- **Survey points are now a white circle with a colored ring + colored
+  check** (`surveyPointIcon()`) instead of a solid colored circle — green
+  ring for an exact match, blue for partial (see above), amber ring +
+  black X for no match at all. Acquisition-list markers (`makeIcon()`)
+  keep their existing solid-fill look, so the two marker families now read
+  as visually distinct shapes rather than same-style circles that happen
+  to differ only in size.
+- **Clicking a survey point now selects its linked acquisition property**
+  instead of just popping up the survey record's own info in isolation.
+  New `selectSurveyRecord(r)` (in `renderSurveyPointsLayer()`'s marker
+  click handler) looks up the acquired property that actually claimed this
+  survey record as its match (`properties.find(p => p.surveyObjectId ===
+  r.objectId)`) and routes straight through the existing `selectProperty()`
+  — the same function the acquisition marker/list card already use — so
+  it clears whatever acquisition selection was previously active and shows
+  this one instead (halo, dashed connector line, map fly-to, list card
+  highlight, its own popup), exactly like clicking that property's own
+  marker would. Falls back to just clearing the old acquisition selection
+  (leaving the survey point's own popup, opened automatically by
+  `bindPopup`) when the record has no linked property at all — a true "No
+  Address Match" point has nothing on the acquisition side to jump to.
+
 ## Correlation logic (the actual point of this app)
 Per user decision, a property counts as "surveyed" if **either** of two independent
 checks matches — not just one — because the real survey export shows why both are

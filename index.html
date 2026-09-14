@@ -132,7 +132,7 @@
   }
   #filter-drawer.open { max-height: 480px; padding: 12px 16px 14px; overflow-y: auto; }
   .fg-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 10px; }
-  @media (min-width: 480px) { .fg-row.status-row { grid-template-columns: repeat(3, 1fr); } .fg-row.region-row { grid-template-columns: repeat(5, 1fr); } }
+  @media (min-width: 480px) { .fg-row.status-row, .fg-row.surveymatch-row { grid-template-columns: repeat(3, 1fr); } .fg-row.region-row { grid-template-columns: repeat(5, 1fr); } }
   .fgt {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
     cursor: pointer; user-select: none; opacity: 0.65; transition: opacity 0.15s, transform 0.15s;
@@ -570,6 +570,17 @@ const CONFIG = {
   // many feet of it — see CORRELATION below. Tune here if field data
   // shows this is too tight/loose once live.
   proximityMatchFeet: 150,
+  // A third, looser match tier (see correlateAll()'s PARTIAL ADDRESS
+  // MATCH pass): catches a survey point that's clearly the SAME property
+  // as a nearby acquired-list point, but whose address text doesn't line
+  // up closely enough for the exact/normalized match above — most often
+  // because the acquired-list address is missing its street-type suffix
+  // (e.g. "7505 ANTIETAM" vs. the survey's "7505 Antietam Ln"). Looser
+  // than proximityMatchFeet on distance, but only ever fires when the
+  // house number AND core street name (suffix/typo-insensitive) actually
+  // agree — see streetCore() — so it's still a fairly tight bar, not just
+  // "anything nearby." Tune here if the field shows it's too tight/loose.
+  partialMatchFeet: 600,
   // Once a property is matched to a survey record (by address and/or
   // proximity — see correlateAll()), if the survey record's own point is
   // further than this from the acquired-list's point, the acquired-list
@@ -657,6 +668,21 @@ const LOCATION_WARNING_COLOR = '#B54708';
 // no address match on the acquired list (surveyPointIcon(), the Survey
 // Points filter icons, and the survey-point popup all share this).
 const SURVEY_NOMATCH_COLOR = '#FBBF24';
+// Third state, between the two above: a survey point that matched an
+// acquired-list property only via the PARTIAL ADDRESS MATCH tier (see
+// correlateAll()) — same house number/core street name and nearby, but
+// the address text didn't line up exactly. Blue, distinct from the green
+// exact-match, amber location-warning, and yellow no-match colors already
+// in use elsewhere in the app.
+const SURVEY_PARTIAL_COLOR = '#2563EB';
+// Returns 'matched' | 'partial' | 'none' for a survey record — the single
+// source of truth surveyPointIcon(), buildSurveyPointPopupHtml(), and the
+// Survey Points (map) filter all key off, so the three stay in sync.
+function surveyMatchState(r) {
+  if (r.addressMatched) return 'matched';
+  if (r.partialMatched) return 'partial';
+  return 'none';
+}
 function regionColor(region) { return (REGIONS[region] && REGIONS[region].color) || '#5a6472'; }
 function complianceInfo(status) { return COMPLIANCE[status] || null; }
 function humanizeEnum(s) {
@@ -708,6 +734,31 @@ function streetOf(fullAddress) {
   return String(fullAddress).split(',')[0].trim();
 }
 function correlationKey(streetAddr, city) { return normAddr(streetAddr) + '@' + normCity(city); }
+// Street-type suffix tokens as normAddr() would spell them after
+// ADDR_ABBR runs (abbreviated form) — used by streetCore() below to
+// strip a trailing street type so "ANTIETAM" (no suffix at all) and
+// "ANTIETAM LN" are recognized as the same core street name. Deliberately
+// does NOT strip directional tokens (N/S/E/W/NE/NW/SE/SW) — those usually
+// mean a genuinely different street/segment, not just a formatting gap.
+const STREET_TYPE_SUFFIXES = new Set(['ST','AVE','DR','RD','LN','CT','BLVD','CIR','PL','HWY','ALY','TRL','PKWY','TER']);
+// Splits a street address into { houseNum, core }: the leading house
+// number, and everything else with a trailing street-type suffix (if
+// any) stripped off. Used by the PARTIAL ADDRESS MATCH correlation tier
+// (see correlateAll()) to compare two addresses more loosely than
+// correlationKey()'s exact normalized-string match — two addresses
+// "partially match" when they have the same houseNum AND the same
+// non-empty core (correlateAll() does that comparison directly, since it
+// precomputes and reuses each survey record's core across every property
+// rather than recomputing it per pair).
+function streetCore(streetAddr) {
+  const norm = normAddr(streetAddr);
+  if (!norm) return { houseNum: '', core: '' };
+  const tokens = norm.split(' ');
+  const houseNum = /^\d+[A-Z]?$/.test(tokens[0]) ? tokens[0] : '';
+  let rest = houseNum ? tokens.slice(1) : tokens;
+  if (rest.length > 1 && STREET_TYPE_SUFFIXES.has(rest[rest.length - 1])) rest = rest.slice(0, -1);
+  return { houseNum, core: rest.join(' ') };
+}
 function haversineFeet(lat1, lon1, lat2, lon2) {
   const R = 20925524.9; // Earth radius in feet
   const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
@@ -1119,6 +1170,10 @@ function buildSurveyAddressIndex() {
 function correlateAll() {
   const addrIndex = buildSurveyAddressIndex();
   const geoRecords = surveyRecords.filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0));
+  // Precompute each geo-tagged survey record's { houseNum, core } once —
+  // used by the PARTIAL ADDRESS MATCH pass below, which would otherwise
+  // recompute this (a regex-heavy call) on every property x record pair.
+  geoRecords.forEach(r => { r._core = streetCore(r.street); });
   // Per-survey-record address-match flag, independent of which property (if
   // any) ends up "claiming" a given record as its best match above — used
   // to color the Survey Points map overlay (green = this record's address
@@ -1132,14 +1187,35 @@ function correlateAll() {
   surveyRecords.forEach(r => {
     const k = correlationKey(r.street, r.city);
     r.addressMatched = !!(k && k !== '@' && propAddrKeys.has(k));
+    // Reset each run — re-derived below as properties claim records via
+    // the partial-match tier (see PARTIAL ADDRESS MATCH pass).
+    r.partialMatched = false;
   });
   properties.forEach(prop => {
     const key = correlationKey(prop.address, prop.city);
     const addrHits = (key && key !== '@') ? (addrIndex.get(key) || []) : [];
+    const propCore = streetCore(prop.address);
+    const propCityNorm = normCity(prop.city);
     let nearest = null, nearestFt = Infinity;
+    // PARTIAL ADDRESS MATCH pass — a third, looser correlation tier for
+    // cases the two checks above both miss: a survey point sitting near
+    // an acquired-list point whose address text doesn't normalize to an
+    // identical string (most often a missing/typo'd street-type suffix —
+    // e.g. acquired-list "7505 ANTIETAM" vs. the survey's "7505 Antietam
+    // Ln") but is clearly the same property — same house number, same
+    // core street name (see streetCore()), and within
+    // CONFIG.partialMatchFeet. Tracks the NEAREST such candidate,
+    // same pattern as the plain-proximity nearest search just below.
+    let partial = null, partialFt = Infinity;
     for (const r of geoRecords) {
       const d = haversineFeet(prop.lat, prop.lng, r.lat, r.lng);
       if (d < nearestFt) { nearestFt = d; nearest = r; }
+      if (d <= CONFIG.partialMatchFeet && d < partialFt &&
+          propCore.houseNum && propCore.core &&
+          r._core.houseNum === propCore.houseNum && r._core.core === propCore.core &&
+          normCity(r.city) === propCityNorm) {
+        partial = r; partialFt = d;
+      }
     }
     const proxHit = nearest && nearestFt <= CONFIG.proximityMatchFeet;
     const methods = [];
@@ -1152,19 +1228,28 @@ function correlateAll() {
       // hit at all — an address hit is the higher-confidence signal.
       if (!matched) matched = nearest;
     }
+    // Partial is the lowest-confidence tier — only used as a last resort
+    // when neither the exact address-text match nor plain proximity
+    // found anything, so it never overrides a higher-confidence match.
+    if (!matched && partial) {
+      methods.push('partial');
+      matched = partial;
+      partial.partialMatched = true;
+    }
     // matchDistanceFt is always the real distance between the acquisition
-    // point and whichever record was matched (address or proximity) —
-    // not just set when proximity was the deciding method — as long as
-    // that record has valid, non-zero geometry to measure from.
+    // point and whichever record was matched (address, proximity, or
+    // partial) — not just set when proximity was the deciding method —
+    // as long as that record has valid, non-zero geometry to measure from.
     let matchDistanceFt = null;
     if (matched && Number.isFinite(matched.lat) && Number.isFinite(matched.lng) && !(matched.lat === 0 && matched.lng === 0)) {
-      matchDistanceFt = (matched === nearest) ? nearestFt : haversineFeet(prop.lat, prop.lng, matched.lat, matched.lng);
+      matchDistanceFt = (matched === nearest) ? nearestFt : (matched === partial ? partialFt : haversineFeet(prop.lat, prop.lng, matched.lat, matched.lng));
     }
     // A large matchDistanceFt can only happen for an address-only match —
     // a proximity match is, by definition, within CONFIG.proximityMatchFeet
-    // (150 ft) of the acquired point. So this flag only ever fires when the
-    // address text lines up but the two points are genuinely far apart —
-    // the acquired-list coordinate is the more likely culprit, since a
+    // (150 ft), and a partial match within CONFIG.partialMatchFeet (600 ft),
+    // of the acquired point. So this flag only ever fires when the address
+    // text lines up but the two points are genuinely far apart — the
+    // acquired-list coordinate is the more likely culprit, since a
     // surveyed property's point comes from an inspector actually standing
     // there.
     const locationSuspect = matchDistanceFt !== null && matchDistanceFt > CONFIG.suspectLocationFeet;
@@ -1268,6 +1353,7 @@ const STATUS_ICONS = {
 // filter option looks like the marker it controls.
 const SURVEY_MATCH_ICONS = {
   all: STATUS_ICONS.all,
+  partial: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${SURVEY_PARTIAL_COLOR}"/><path d="M7 12.5l3 3 7-7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   unmatched: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${SURVEY_NOMATCH_COLOR}"/><path d="M8 8l8 8M16 8l-8 8" stroke="#000" stroke-width="2.4" stroke-linecap="round"/></svg>`,
 };
 function buildFilterGrid() {
@@ -1306,10 +1392,12 @@ function buildFilterGrid() {
   );
   const surveyMatchCounts = {
     all: surveyMatchScope.length,
-    unmatched: surveyMatchScope.filter(r => !r.addressMatched).length,
+    partial: surveyMatchScope.filter(r => surveyMatchState(r) === 'partial').length,
+    unmatched: surveyMatchScope.filter(r => surveyMatchState(r) === 'none').length,
   };
   const surveyMatchOpts = [
     { key: 'all', label: 'All' },
+    { key: 'partial', label: 'Partial Match' },
     { key: 'unmatched', label: 'No Address Match' },
   ];
   const surveyMatchBtns = surveyMatchOpts.map(o => `
@@ -1391,7 +1479,7 @@ function updateActiveFilterBar() {
   if (activeStatus !== 'all') chips.push({ kind: 'status', label: activeStatus === 'surveyed' ? 'Surveyed' : 'Not Surveyed' });
   if (activeRegion !== 'all') chips.push({ kind: 'region', label: REGIONS[activeRegion].label });
   if (activeCounty !== 'all') chips.push({ kind: 'county', label: activeCounty });
-  if (activeSurveyMatch !== 'all') chips.push({ kind: 'surveymatch', label: 'Survey pts: no match' });
+  if (activeSurveyMatch !== 'all') chips.push({ kind: 'surveymatch', label: activeSurveyMatch === 'partial' ? 'Survey pts: partial match' : 'Survey pts: no match' });
   bar.innerHTML = chips.map(c =>
     `<button class="active-chip" type="button" data-clear="${c.kind}"${c.key ? ` data-key="${c.key}"` : ''} aria-label="Remove filter: ${c.label}">${c.label}<span class="active-chip-x" aria-hidden="true">×</span></button>`
   ).join('');
@@ -1718,6 +1806,33 @@ function selectProperty(id) {
   const card = document.getElementById('card-' + p.id);
   if (card) { card.classList.add('selected'); card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
 }
+// Fixed 2026-09-14: clicking a survey point used to just pop open that
+// record's own info in isolation, leaving whatever acquisition marker was
+// previously selected (halo, connector line, card highlight) untouched —
+// confusing once both layers are on at once, since it looked like the
+// survey point wasn't connected to anything. Now clicking a survey point
+// behaves like clicking the acquisition-list property it's actually
+// linked to (by address, proximity, or partial match — see
+// correlateAll()/p.surveyObjectId): routes straight through
+// selectProperty(), which already clears the previous selection and
+// shows the new one (halo, connector line, map fly-to, list card, its own
+// popup) — the exact same behavior as clicking that property's own marker
+// or list card.
+function selectSurveyRecord(r) {
+  const linkedProp = properties.find(p => p.surveyObjectId === r.objectId);
+  if (linkedProp) { selectProperty(linkedProp.id); return; }
+  // No linked acquisition record at all (a true "No Address Match" survey
+  // point — nothing to show on the acquisition side) — just clear
+  // whatever acquisition selection was active and leave this survey
+  // point's own popup (already opened by its bindPopup) as the result.
+  if (selectedId && markers[String(selectedId)]) {
+    const o = getProperty(selectedId);
+    if (o) markers[String(selectedId)].setIcon(makeIcon(o, false));
+  }
+  selectedId = null;
+  clearMatchHighlight();
+  document.querySelectorAll('.asset-card').forEach(c => c.classList.remove('selected'));
+}
 // ════════════════════════════════════════════════════════════════
 //  PARCELS BOUNDARY LAYER — TN statewide parcel/property-boundary
 //  polygons (replaces the legislative-district/census-tract boundary
@@ -1877,20 +1992,27 @@ function buildParcelPopupHtml(feature) {
 //  (rendered once at startup) — there's no user-facing toggle for this or
 //  the parcels layer; both just stay on.
 // ════════════════════════════════════════════════════════════════
-function surveyPointIcon(matched) {
+function surveyPointIcon(state) {
   const sz = 17;
-  const bg = matched ? STATUS_COLORS.surveyed : SURVEY_NOMATCH_COLOR;
-  // Matched: white checkmark, same shape language as the acquisition-list
-  // "surveyed" glyph used to have. Unmatched: black X, so a field user can
-  // tell "surveyed but doesn't line up with the acquired list" apart from
-  // "not surveyed" (that's the acquisition marker's separate red "!") at a
-  // glance.
-  const glyph = matched
-    ? `<path d="M3.5 8.5l2.6 2.6L12.5 4" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`
-    : `<path d="M4 4l8 8M12 4L4 12" stroke="#000" stroke-width="2" stroke-linecap="round"/>`;
+  const ring = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : SURVEY_NOMATCH_COLOR;
+  // Fixed 2026-09-14: survey points used to be a SOLID colored circle,
+  // same look as the acquisition-list markers (makeIcon()) — easy to
+  // confuse the two marker families at a glance, especially for a good
+  // match where they sit right on top of each other (see the zIndexOffset
+  // fix note above). Now always a WHITE circle with a colored ring +
+  // colored glyph, so "survey point" reads as its own consistent shape
+  // language no matter which match state it's in, and never gets mistaken
+  // for a solid acquisition-list marker.
+  const glyph = state !== 'none'
+    ? `<path d="M3.5 8.5l2.6 2.6L12.5 4" fill="none" stroke="${ring}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>`
+    // No match: black X (unchanged) — a field user can tell "surveyed but
+    // doesn't line up with the acquired list at all" apart from "not
+    // surveyed" (that's the acquisition marker's separate red "!") at a
+    // glance, without relying on the (fairly pale) amber ring alone.
+    : `<path d="M4 4l8 8M12 4L4 12" stroke="#000" stroke-width="2.3" stroke-linecap="round"/>`;
   return L.divIcon({
     className: '',
-    html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;box-shadow:0 0 0 1.5px #fff,0 1px 4px rgba(0,0,0,0.4);background:${bg};display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 16 16" width="${Math.round(sz*0.75)}" height="${Math.round(sz*0.75)}">${glyph}</svg></div>`,
+    html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;box-shadow:0 0 0 2px ${ring},0 1px 4px rgba(0,0,0,0.35);background:#fff;display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 16 16" width="${Math.round(sz*0.75)}" height="${Math.round(sz*0.75)}">${glyph}</svg></div>`,
     iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
   });
 }
@@ -1907,10 +2029,13 @@ function renderSurveyPointsLayer() {
     .filter(r => activeRegion === 'all' || r.attrs[SURVEY_FIELDS.region] === activeRegion)
     .filter(r => activeCounty === 'all' || r.attrs[SURVEY_FIELDS.county] === activeCounty)
     // Survey Points filter (activeSurveyMatch, set via setSurveyMatchFilter):
-    // 'unmatched' shows only records with no address match on the acquired
-    // list — everything else about this layer/the acquisition list is
-    // unaffected, this filter only ever hides the green-check dots.
-    .filter(r => activeSurveyMatch !== 'unmatched' || !r.addressMatched)
+    // 'unmatched' shows only records with NO correlation at all (not even
+    // the partial tier — surveyMatchState() calls that 'none'), 'partial'
+    // shows only the partial-match tier — everything else about this
+    // layer/the acquisition list is unaffected, this filter only ever
+    // narrows which dots show.
+    .filter(r => activeSurveyMatch === 'all' ||
+      (activeSurveyMatch === 'unmatched' ? surveyMatchState(r) === 'none' : surveyMatchState(r) === activeSurveyMatch))
     .map(r => L.marker([r.lat, r.lng], {
       // pane: 'markerPane' (2026-09-12 fix) — a plain circleMarker/marker
       // defaults to the SAME pane the parcels polygons use
@@ -1936,13 +2061,17 @@ function renderSurveyPointsLayer() {
       // render above acquisition markers (whose default is 0), so
       // they're visible at a glance without needing to select anything.
       zIndexOffset: 500,
-      // Green check when this survey record's address lines up with
-      // something on the acquired list, yellow X when it doesn't — an
-      // at-a-glance data-quality check on the map, using the same
-      // address-match logic correlateAll() uses for the acquired-property
-      // side (see r.addressMatched there).
-      icon: surveyPointIcon(r.addressMatched),
-    }).bindPopup(() => buildSurveyPointPopupHtml(r), { maxWidth: 260 }));
+      // Green check (exact address match), blue check (partial match —
+      // same house number/street, address text didn't line up exactly),
+      // or yellow X (no correlation at all) — an at-a-glance data-quality
+      // check on the map, using the same correlation logic correlateAll()
+      // uses for the acquired-property side (see surveyMatchState()).
+      icon: surveyPointIcon(surveyMatchState(r)),
+    }).bindPopup(() => buildSurveyPointPopupHtml(r), { maxWidth: 260 })
+      // Selecting a survey point should behave like selecting its linked
+      // acquisition record, not just pop up the survey record's own info
+      // in isolation — see selectSurveyRecord().
+      .on('click', () => selectSurveyRecord(r)));
   surveyPointsLayerGroup = L.layerGroup(layers).addTo(map);
 }
 function popRow(label, val) {
@@ -1957,8 +2086,11 @@ function buildSurveyPointPopupHtml(r) {
     popRow('Inspector', a[SURVEY_FIELDS.inspectorName]),
     popRow('Region', a[SURVEY_FIELDS.region]),
   ].join('');
-  const matchColor = r.addressMatched ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed;
-  const matchLabel = r.addressMatched ? 'Address matches acquired list' : 'No address match on acquired list';
+  const state = surveyMatchState(r);
+  const matchColor = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
+  const matchLabel = state === 'matched' ? 'Address matches acquired list'
+    : state === 'partial' ? 'Partial match — nearby acquisition record, address text differs'
+    : 'No address match on acquired list';
   return `<div class="pop">
       <div class="pop-type" style="color:#003a8c">Survey Record</div>
       <div class="pop-name">${escapeHtml(a[SURVEY_FIELDS.address] || 'Unknown address')}</div>
@@ -2481,9 +2613,14 @@ function matchMethodLabel(p) {
   if (!p.surveyed) return '';
   const hasAddr = p.matchMethods.includes('address');
   const hasProx = p.matchMethods.includes('proximity');
+  const hasPartial = p.matchMethods.includes('partial');
   if (hasAddr && hasProx) return 'address text and location proximity';
   if (hasAddr) return 'address text';
   if (hasProx) return 'location proximity';
+  // Partial only ever fires alone (see correlateAll() — it's a last-
+  // resort tier, skipped whenever address or proximity already matched),
+  // so there's no combination case to handle here.
+  if (hasPartial) return 'a close, partial address match — house number and street name agree, but the address text doesn’t line up exactly';
   return '';
 }
 // Plain-language statement of the gap between the acquisition-list point

@@ -102,12 +102,12 @@ Survey123 form for any property that still needs a visit.
     checkmark/X glyph (`L.marker` + `L.divIcon`, via `surveyPointIcon()`),
     per user request, so the survey-point layer is the one that "owns" the
     checkmark now — see the acquisition-marker note right below.
-- The **acquisition-list marker's own checkmark was removed** the same
-  day: a surveyed acquisition property (`makeIcon()`) is now a **plain
-  green circle**, no glyph — the checkmark previously shown there was
-  easy to confuse with the survey layer's own (now more prominent)
-  checkmark. Not-surveyed acquisition markers are unchanged (red circle
-  with a white "!").
+- Reverted later the same day, per user preference: the acquisition-list
+  marker keeps its **larger** checkmark (`makeIcon()`, 26px/38px when
+  selected) — both marker types are checkmarks now when matched/surveyed,
+  and the **size** (26-38px acquisition vs 17px survey point) is what
+  tells them apart on the map, not the glyph. Not-surveyed acquisition
+  markers are unchanged (red circle with a white "!").
 - Selecting a **matched** property (from the list or the map) draws a
   dashed connector line plus a pulsing halo (`.match-halo`) on its matched
   survey point (`showMatchHighlight()` in `selectProperty()`) — shown
@@ -116,12 +116,40 @@ Survey123 form for any property that still needs a visit.
   automatically when a different property is selected.
 
 ## Filters & list UI
-- Filter drawer has three single-select filters now: **Survey Status**,
-  **Region**, and **County** (`activeStatus`/`activeRegion`/`activeCounty`,
-  each `'all'` == no filter). County is a native `<select>` rather than a
-  button grid — there are 42 distinct counties in the acquired list,
-  computed fresh in `buildFilterGrid()` from `properties.map(p => p.county)`
-  — too many for the button-grid pattern the other two use.
+- Filter drawer has three single-select filters on the **acquired-property
+  list/map**: **Survey Status**, **Region**, and **County**
+  (`activeStatus`/`activeRegion`/`activeCounty`, each `'all'` == no
+  filter). County is a native `<select>` rather than a button grid — there
+  are 42 distinct counties in the acquired list, computed fresh in
+  `buildFilterGrid()` from `properties.map(p => p.county)` — too many for
+  the button-grid pattern the other two use.
+- **Bug fixed 2026-09-14**: filtering never actually changed what showed
+  on the *map* — only the side list. `refreshMarkers()` was looping over
+  `properties` (the full, unfiltered array) instead of `renderedList`
+  (what `getFiltered()` produces and what the list is built from), so the
+  map markers ignored Survey Status/Region/County/search entirely while
+  the list below correctly narrowed. Fixed by having `refreshMarkers()`
+  loop over `renderedList` instead — it's always set immediately before
+  `refreshMarkers()` is called (both happen inside
+  `applyFiltersAndRender()`), so this is safe.
+- **County dropdown now cascades from Region** (2026-09-14): picking a
+  Region narrows the County `<select>` to only the counties that actually
+  occur in that region (`buildFilterGrid()`'s `countySource`), instead of
+  always listing all 42 statewide. If the currently-selected county isn't
+  valid under the newly-picked region, `setRegionFilter()` resets County
+  back to "All" rather than silently keep filtering on a county that's no
+  longer even in the list. `setRegionFilter()` now calls `buildFilterGrid()`
+  to rebuild the whole grid (previously it just toggled CSS classes on the
+  region buttons) so the county options stay in sync.
+- **New: Survey Points map filter** (2026-09-14, `activeSurveyMatch`,
+  `setSurveyMatchFilter()`) — All / No Address Match, in its own row in the
+  filter drawer. This is deliberately **separate** from the three filters
+  above: it only controls which dots `renderSurveyPointsLayer()` draws on
+  the map (survey records with no address match on the acquired list —
+  the yellow-X markers), and has no effect on the acquired-property list,
+  its markers, or its count. Re-renders just that one layer via
+  `renderSurveyPointsLayer()` rather than going through
+  `applyFiltersAndRender()`.
 - The **"Distance from me" buffer filter was removed** (along with the
   `p.distance` calculation and the distance-based list sort) — the list
   now always sorts alphabetically by address. The **Locate/re-center

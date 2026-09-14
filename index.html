@@ -613,6 +613,11 @@ const STATUS_COLORS = { surveyed: '#2E7D32', unsurveyed: '#C52200' };
 // so a "this location looks wrong" warning never reads as a survey-status
 // or compliance signal.
 const LOCATION_WARNING_COLOR = '#B54708';
+// Yellow — distinct from the acquisition-list green/red and from the
+// amber location-warning color above — used only for a survey point with
+// no address match on the acquired list (surveyPointIcon(), the Survey
+// Points filter icons, and the survey-point popup all share this).
+const SURVEY_NOMATCH_COLOR = '#FBBF24';
 function regionColor(region) { return (REGIONS[region] && REGIONS[region].color) || '#5a6472'; }
 function complianceInfo(status) { return COMPLIANCE[status] || null; }
 function humanizeEnum(s) {
@@ -943,6 +948,8 @@ let surveyRecords = [];                 // raw survey layer features, current se
 let activeStatus = 'all';               // 'all' | 'surveyed' | 'unsurveyed'
 let activeRegion = 'all';               // single-select, 'all' == no region filter
 let activeCounty = 'all';               // single-select, 'all' == no county filter
+let activeSurveyMatch = 'all';          // 'all' | 'unmatched' — filters the Survey Points MAP LAYER only
+                                         // (does not touch `properties`/the list — see setSurveyMatchFilter)
 let searchTerm = '', selectedId = null;
 let boundaryLayerGroup = null, surveyPointsLayerGroup = null, matchHighlightLayer = null;
 let boundaryMoveHandler = null, boundaryFetchToken = 0;
@@ -1202,6 +1209,13 @@ const STATUS_ICONS = {
   surveyed: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${STATUS_COLORS.surveyed}"/><path d="M7 12.5l3 3 7-7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   unsurveyed: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${STATUS_COLORS.unsurveyed}"/><path d="M12 7v6" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="16.3" r="1.4" fill="#fff"/></svg>`,
 };
+// Icons for the separate "Survey Points" map-layer filter — deliberately
+// reusing the same yellow/black-X glyph as surveyPointIcon() so the
+// filter option looks like the marker it controls.
+const SURVEY_MATCH_ICONS = {
+  all: STATUS_ICONS.all,
+  unmatched: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${SURVEY_NOMATCH_COLOR}"/><path d="M8 8l8 8M16 8l-8 8" stroke="#000" stroke-width="2.4" stroke-linecap="round"/></svg>`,
+};
 function buildFilterGrid() {
   const statusOpts = [
     { key: 'all', label: 'All' },
@@ -1219,16 +1233,31 @@ function buildFilterGrid() {
       <div class="fgt-icon" aria-hidden="true">${o.color ? `<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="10" fill="${o.color}"/></svg>` : STATUS_ICONS.all}</div>
       <div class="fgt-label">${o.label}</div>
     </button>`).join('');
-  const counties = [...new Set(properties.map(p => p.county).filter(Boolean))].sort();
+  // County list is scoped to the active Region filter — picking a region
+  // narrows the county dropdown down to just the counties that actually
+  // occur in that region, instead of always listing all 42 statewide.
+  const countySource = activeRegion === 'all' ? properties : properties.filter(p => p.region === activeRegion);
+  const counties = [...new Set(countySource.map(p => p.county).filter(Boolean))].sort();
   const countyOpts = [`<option value="all" ${activeCounty === 'all' ? 'selected' : ''}>All Counties</option>`, ...counties.map(c =>
     `<option value="${escapeHtml(c)}" ${activeCounty === c ? 'selected' : ''}>${escapeHtml(c)}</option>`)].join('');
+  const surveyMatchOpts = [
+    { key: 'all', label: 'All' },
+    { key: 'unmatched', label: 'No Address Match' },
+  ];
+  const surveyMatchBtns = surveyMatchOpts.map(o => `
+    <button class="fgt ${activeSurveyMatch === o.key ? 'active' : ''}" data-surveymatch="${o.key}" aria-pressed="${activeSurveyMatch === o.key ? 'true' : 'false'}" onclick="setSurveyMatchFilter('${o.key}')">
+      <div class="fgt-icon" aria-hidden="true">${SURVEY_MATCH_ICONS[o.key]}</div>
+      <div class="fgt-label">${o.label}</div>
+    </button>`).join('');
   document.getElementById('filter-grid').innerHTML = `
     <div class="buf-label">Survey Status</div>
     <div class="fg-row status-row" role="group" aria-label="Filter by survey status">${statusBtns}</div>
     <div class="buf-label">Region</div>
     <div class="fg-row region-row" role="radiogroup" aria-label="Filter by region">${regionBtns}</div>
-    <div class="buf-label">County</div>
-    <select id="county-filter" class="county-select" aria-label="Filter by county" onchange="setCountyFilter(this.value)">${countyOpts}</select>`;
+    <div class="buf-label">County${activeRegion !== 'all' ? ` (${REGIONS[activeRegion].label})` : ''}</div>
+    <select id="county-filter" class="county-select" aria-label="Filter by county" onchange="setCountyFilter(this.value)">${countyOpts}</select>
+    <div class="buf-label">Survey Points (map)</div>
+    <div class="fg-row surveymatch-row" role="group" aria-label="Filter survey points on the map by address match">${surveyMatchBtns}</div>`;
 }
 function toggleFilterDrawer(forceClose = false) {
   const drawer = document.getElementById('filter-drawer');
@@ -1255,11 +1284,17 @@ function setStatusFilter(key) {
 }
 function setRegionFilter(key) {
   activeRegion = key;
-  document.querySelectorAll('.fgt[data-region]').forEach(el => {
-    const on = el.getAttribute('data-region') === key;
-    el.classList.toggle('active', on);
-    el.setAttribute('aria-pressed', on ? 'true' : 'false');
-  });
+  // The county dropdown is scoped to the active region (built in
+  // buildFilterGrid), so a county picked under a different region may no
+  // longer be a valid option — reset it rather than leave a stale value
+  // silently filtering against a county that isn't even listed anymore.
+  if (activeCounty !== 'all') {
+    const validCounties = new Set(
+      properties.filter(p => key === 'all' || p.region === key).map(p => p.county).filter(Boolean)
+    );
+    if (!validCounties.has(activeCounty)) activeCounty = 'all';
+  }
+  buildFilterGrid();
   updateActiveFilterBar();
   applyFiltersAndRender();
 }
@@ -1268,6 +1303,19 @@ function setCountyFilter(key) {
   updateActiveFilterBar();
   applyFiltersAndRender();
 }
+function setSurveyMatchFilter(key) {
+  activeSurveyMatch = key;
+  document.querySelectorAll('.fgt[data-surveymatch]').forEach(el => {
+    const on = el.getAttribute('data-surveymatch') === key;
+    el.classList.toggle('active', on);
+    el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  updateActiveFilterBar();
+  // This filter only affects the separate Survey Points map layer, not
+  // the acquisition-property list/markers — re-render just that layer
+  // rather than going through applyFiltersAndRender().
+  renderSurveyPointsLayer();
+}
 function updateActiveFilterBar() {
   const bar = document.getElementById('active-filters');
   const btn = document.getElementById('filter-toggle-btn');
@@ -1275,6 +1323,7 @@ function updateActiveFilterBar() {
   if (activeStatus !== 'all') chips.push({ kind: 'status', label: activeStatus === 'surveyed' ? 'Surveyed' : 'Not Surveyed' });
   if (activeRegion !== 'all') chips.push({ kind: 'region', label: REGIONS[activeRegion].label });
   if (activeCounty !== 'all') chips.push({ kind: 'county', label: activeCounty });
+  if (activeSurveyMatch !== 'all') chips.push({ kind: 'surveymatch', label: 'Survey pts: no match' });
   bar.innerHTML = chips.map(c =>
     `<button class="active-chip" type="button" data-clear="${c.kind}"${c.key ? ` data-key="${c.key}"` : ''} aria-label="Remove filter: ${c.label}">${c.label}<span class="active-chip-x" aria-hidden="true">×</span></button>`
   ).join('');
@@ -1287,6 +1336,7 @@ function updateActiveFilterBar() {
       if (kind === 'status') setStatusFilter('all');
       else if (kind === 'region') setRegionFilter('all');
       else if (kind === 'county') { setCountyFilter('all'); const sel = document.getElementById('county-filter'); if (sel) sel.value = 'all'; }
+      else if (kind === 'surveymatch') setSurveyMatchFilter('all');
     });
   }
   btn.classList.toggle('has-filter', chips.length > 0);
@@ -1490,18 +1540,16 @@ function makeIcon(p, sel = false) {
   const color = p.surveyed ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed;
   const sz = sel ? 38 : 26;
   const ring = sel ? `box-shadow:0 0 0 3px ${color}, 0 3px 12px rgba(0,0,0,0.35)` : `box-shadow:0 2px 6px rgba(0,0,0,0.3)`;
-  // Surveyed acquisition-list markers are a plain green circle — no
-  // checkmark glyph. The checkmark now belongs to the survey-point layer
-  // instead (see renderSurveyPointsLayer/surveyPointIcon), so it always
-  // means "this is a real, address-matched survey visit," not "this
-  // acquisition happens to have one." Not-surveyed keeps its "!" glyph
-  // unchanged, per the original design.
+  // Both surveyed acquisition markers and matched survey points use a
+  // checkmark now — the size difference (this one 26/38px vs the survey
+  // layer's 17px, see surveyPointIcon()) is what tells them apart on the
+  // map, per user preference. Not-surveyed keeps its "!" glyph unchanged.
   const glyph = p.surveyed
-    ? ''
+    ? `<path d="M6 12.5l3.2 3.2L18 7" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>`
     : `<path d="M12 7v6" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="16.3" r="1.5" fill="#fff"/>`;
   return L.divIcon({
     className: '',
-    html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;${ring};background:${color};display:flex;align-items:center;justify-content:center">${glyph ? `<svg viewBox="0 0 24 24" width="${Math.round(sz*0.66)}" height="${Math.round(sz*0.66)}">${glyph}</svg>` : ''}</div>`,
+    html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;${ring};background:${color};display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" width="${Math.round(sz*0.66)}" height="${Math.round(sz*0.66)}">${glyph}</svg></div>`,
     iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
   });
 }
@@ -1525,7 +1573,13 @@ function refreshMarkers() {
   clusterGroup.clearLayers();
   markers = {};
   const layers = [];
-  properties.forEach(p => {
+  // Bug fix 2026-09-14: this used to loop over `properties` (every
+  // acquired property, unfiltered) instead of `renderedList` (the result
+  // of getFiltered()) — so the side list would shrink to match a filter
+  // but the map markers never did. `applyFiltersAndRender()` always sets
+  // `renderedList` immediately before calling this, so it's safe to rely
+  // on here.
+  renderedList.forEach(p => {
     const mk = L.marker([p.lat, p.lng], { icon: makeIcon(p) })
       .bindPopup(buildPopupHtml(p), { closeButton: false, offset: [0, -4], maxWidth: 240, autoPan: true, autoPanPaddingTopLeft: [130, 60], autoPanPaddingBottomRight: [70, 70] })
       .on('click', () => selectProperty(p.id));
@@ -1735,10 +1789,6 @@ function buildParcelPopupHtml(feature) {
 //  (rendered once at startup) — there's no user-facing toggle for this or
 //  the parcels layer; both just stay on.
 // ════════════════════════════════════════════════════════════════
-// Yellow — distinct from the acquisition-list green/red and from the
-// amber location-warning color — used only for a survey point with no
-// address match on the acquired list.
-const SURVEY_NOMATCH_COLOR = '#FBBF24';
 function surveyPointIcon(matched) {
   const sz = 17;
   const bg = matched ? STATUS_COLORS.surveyed : SURVEY_NOMATCH_COLOR;
@@ -1760,6 +1810,11 @@ function renderSurveyPointsLayer() {
   if (surveyPointsLayerGroup) { map.removeLayer(surveyPointsLayerGroup); surveyPointsLayerGroup = null; }
   const layers = surveyRecords
     .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0))
+    // Survey Points filter (activeSurveyMatch, set via setSurveyMatchFilter):
+    // 'unmatched' shows only records with no address match on the acquired
+    // list — everything else about this layer/the acquisition list is
+    // unaffected, this filter only ever hides the green-check dots.
+    .filter(r => activeSurveyMatch !== 'unmatched' || !r.addressMatched)
     .map(r => L.marker([r.lat, r.lng], {
       // pane: 'markerPane' (2026-09-12 fix) — a plain circleMarker/marker
       // defaults to the SAME pane the parcels polygons use

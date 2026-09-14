@@ -54,6 +54,22 @@ Survey123 form for any property that still needs a visit.
   names into "Parcel Id"/"Owner Name"), rather than a curated field list. Live
   verification once deployed and signed in is still needed — see below.
 
+## Survey Points map overlay + match highlighting
+- The **Survey Points** layer's dots are now color-coded by address match,
+  not a single fixed blue: green (`STATUS_COLORS.surveyed`) when a survey
+  record's normalized street+city matches something on the acquired list,
+  red (`STATUS_COLORS.unsurveyed`) when it doesn't — computed in
+  `correlateAll()` as `r.addressMatched`, independent of which acquired
+  property (if any) ends up "claiming" that record as its best match. Lets a
+  field user spot address-quality issues (typos, wrong addresses entered by
+  inspectors) directly on the map. The popup states the same thing in words.
+- Selecting a **matched** property (from the list or the map) draws a
+  dashed connector line plus a pulsing halo (`.match-halo`) on its matched
+  survey point (`showMatchHighlight()` in `selectProperty()`) — shown
+  regardless of whether the Survey Points overlay toggle is on, since the
+  point is to show *that one* link, not the whole layer. Cleared
+  automatically when a different property is selected.
+
 ## Correlation logic (the actual point of this app)
 Per user decision, a property counts as "surveyed" if **either** of two independent
 checks matches — not just one — because the real survey export shows why both are

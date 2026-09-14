@@ -267,6 +267,8 @@
   .user-dot { width: 16px; height: 16px; background: var(--tema-blue); border-radius: 50%; border: 3px solid white; box-shadow: 0 0 0 3px rgba(0,40,104,0.3); animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100%{box-shadow:0 0 0 3px rgba(0,40,104,0.3)} 50%{box-shadow:0 0 0 8px rgba(0,40,104,0.08)} }
   .user-dot-stale { background: #d4920a; box-shadow: 0 0 0 3px rgba(212,146,10,0.3); animation: none; }
+  .match-halo { width: 22px; height: 22px; border-radius: 50%; border: 3px solid #003a8c; background: rgba(0,58,140,0.18); box-shadow: 0 0 0 4px rgba(0,58,140,0.22); animation: matchPulse 1.3s ease-in-out infinite; }
+  @keyframes matchPulse { 0%,100%{ box-shadow: 0 0 0 4px rgba(0,58,140,0.22); transform: scale(1); } 50%{ box-shadow: 0 0 0 11px rgba(0,58,140,0.05); transform: scale(1.08); } }
   .leaflet-popup-content-wrapper { border-radius: var(--radius-sm) !important; box-shadow: var(--shadow-lg) !important; font-family: 'DM Sans',sans-serif !important; padding: 0 !important; }
   .leaflet-popup-content { margin: 0 !important; }
   .pop { padding: 11px 13px; min-width: 170px; max-width: 260px; }
@@ -966,11 +968,11 @@ let map, userMarker, userLat = null, userLng = null;
 let markers = {}, properties = [];      // properties = ACQUIRED_RAW enriched with survey-match info
 let surveyRecords = [];                 // raw survey layer features, current session
 let activeStatus = 'all';               // 'all' | 'surveyed' | 'unsurveyed'
-let activeRegions = new Set();          // multi-select, empty == all regions
+let activeRegion = 'all';               // single-select, 'all' == no region filter
 let activeBuffer = null, searchTerm = '', selectedId = null;
 let showParcels = true;                 // TN Property Parcels boundary layer — on by default
 let showSurveyPoints = true;            // overlay of raw survey-layer points — on by default
-let boundaryLayerGroup = null, surveyPointsLayerGroup = null;
+let boundaryLayerGroup = null, surveyPointsLayerGroup = null, matchHighlightLayer = null;
 let boundaryMoveHandler = null, boundaryFetchToken = 0;
 let renderedList = [];
 let refreshTimer = null;
@@ -1096,6 +1098,20 @@ function buildSurveyAddressIndex() {
 function correlateAll() {
   const addrIndex = buildSurveyAddressIndex();
   const geoRecords = surveyRecords.filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0));
+  // Per-survey-record address-match flag, independent of which property (if
+  // any) ends up "claiming" a given record as its best match above — used
+  // to color the Survey Points map overlay (green = this record's address
+  // lines up with something on the acquired list, red = it doesn't), so a
+  // field user can spot-check address-quality issues directly on the map.
+  const propAddrKeys = new Set();
+  properties.forEach(prop => {
+    const k = correlationKey(prop.address, prop.city);
+    if (k && k !== '@') propAddrKeys.add(k);
+  });
+  surveyRecords.forEach(r => {
+    const k = correlationKey(r.street, r.city);
+    r.addressMatched = !!(k && k !== '@' && propAddrKeys.has(k));
+  });
   properties.forEach(prop => {
     const key = correlationKey(prop.address, prop.city);
     const addrHits = (key && key !== '@') ? (addrIndex.get(key) || []) : [];
@@ -1215,10 +1231,11 @@ function buildFilterGrid() {
       <div class="fgt-icon" aria-hidden="true">${STATUS_ICONS[o.key]}</div>
       <div class="fgt-label">${o.label}</div>
     </button>`).join('');
-  const regionBtns = Object.entries(REGIONS).map(([key, r]) => `
-    <button class="fgt" data-region="${key}" aria-pressed="false" onclick="toggleRegionFilter('${key}')" aria-label="Filter: ${r.label} region">
-      <div class="fgt-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="10" fill="${r.color}"/></svg></div>
-      <div class="fgt-label">${r.label}</div>
+  const regionOpts = [{ key: 'all', label: 'All', color: null }, ...Object.entries(REGIONS).map(([key, r]) => ({ key, label: r.label, color: r.color }))];
+  const regionBtns = regionOpts.map(o => `
+    <button class="fgt ${activeRegion === o.key ? 'active' : ''}" data-region="${o.key}" aria-pressed="${activeRegion === o.key ? 'true' : 'false'}" onclick="setRegionFilter('${o.key}')" aria-label="Filter: ${o.label} region">
+      <div class="fgt-icon" aria-hidden="true">${o.color ? `<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="10" fill="${o.color}"/></svg>` : STATUS_ICONS.all}</div>
+      <div class="fgt-label">${o.label}</div>
     </button>`).join('');
   const bufferBtns = BUFFER_OPTIONS.map(o => `
     <button class="buft ${o.miles === null ? 'active' : ''}" data-miles="${o.miles === null ? '' : o.miles}"
@@ -1227,7 +1244,7 @@ function buildFilterGrid() {
     <div class="buf-label">Survey Status</div>
     <div class="fg-row status-row" role="group" aria-label="Filter by survey status">${statusBtns}</div>
     <div class="buf-label">Region</div>
-    <div class="fg-row region-row" role="group" aria-label="Filter by region, select one or more">${regionBtns}</div>
+    <div class="fg-row region-row" role="radiogroup" aria-label="Filter by region">${regionBtns}</div>
     <div class="buf-label">Distance from me</div>
     <div class="buf-row" role="group" aria-label="Filter by distance from my location">${bufferBtns}</div>`;
 }
@@ -1280,24 +1297,15 @@ function setStatusFilter(key) {
   applyFiltersAndRender();
   toggleFilterDrawer(true);
 }
-function toggleRegionFilter(key) {
-  if (activeRegions.has(key)) activeRegions.delete(key); else activeRegions.add(key);
+function setRegionFilter(key) {
+  activeRegion = key;
   document.querySelectorAll('.fgt[data-region]').forEach(el => {
-    const k = el.getAttribute('data-region');
-    const on = activeRegions.has(k);
+    const on = el.getAttribute('data-region') === key;
     el.classList.toggle('active', on);
     el.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
   updateActiveFilterBar();
   applyFiltersAndRender();
-}
-function removeRegionFilter(key) { activeRegions.delete(key); syncRegionButtons(); updateActiveFilterBar(); applyFiltersAndRender(); }
-function syncRegionButtons() {
-  document.querySelectorAll('.fgt[data-region]').forEach(el => {
-    const on = activeRegions.has(el.getAttribute('data-region'));
-    el.classList.toggle('active', on);
-    el.setAttribute('aria-pressed', on ? 'true' : 'false');
-  });
 }
 function setBuffer(el, miles) {
   document.querySelectorAll('.buft').forEach(c => { c.classList.remove('active'); c.setAttribute('aria-pressed', 'false'); });
@@ -1321,7 +1329,7 @@ function updateActiveFilterBar() {
   const btn = document.getElementById('filter-toggle-btn');
   const chips = [];
   if (activeStatus !== 'all') chips.push({ kind: 'status', label: activeStatus === 'surveyed' ? 'Surveyed' : 'Not Surveyed' });
-  activeRegions.forEach(key => chips.push({ kind: 'region', key, label: REGIONS[key].label }));
+  if (activeRegion !== 'all') chips.push({ kind: 'region', label: REGIONS[activeRegion].label });
   if (activeBuffer !== null) chips.push({ kind: 'buffer', label: `Within ${activeBuffer} mi` });
   bar.innerHTML = chips.map(c =>
     `<button class="active-chip" type="button" data-clear="${c.kind}"${c.key ? ` data-key="${c.key}"` : ''} aria-label="Remove filter: ${c.label}">${c.label}<span class="active-chip-x" aria-hidden="true">×</span></button>`
@@ -1333,7 +1341,7 @@ function updateActiveFilterBar() {
       if (!chip) return;
       const kind = chip.getAttribute('data-clear');
       if (kind === 'status') setStatusFilter('all');
-      else if (kind === 'region') removeRegionFilter(chip.getAttribute('data-key'));
+      else if (kind === 'region') setRegionFilter('all');
       else if (kind === 'buffer') clearBufferFilter();
     });
   }
@@ -1344,7 +1352,7 @@ function getFiltered() {
   let list = properties.filter(p => {
     if (activeStatus === 'surveyed' && !p.surveyed) return false;
     if (activeStatus === 'unsurveyed' && p.surveyed) return false;
-    if (activeRegions.size > 0 && !activeRegions.has(p.region)) return false;
+    if (activeRegion !== 'all' && p.region !== activeRegion) return false;
     if (activeBuffer !== null && (p.distance === null || p.distance > activeBuffer)) return false;
     if (searchTerm) {
       const h = `${p.address} ${p.city} ${p.region} ${p.county || ''}`.toLowerCase();
@@ -1371,7 +1379,7 @@ function applyFiltersAndRender() {
 function renderList() {
   const c = document.getElementById('asset-list');
   if (!renderedList.length) {
-    const isFiltering = activeStatus !== 'all' || activeRegions.size > 0 || activeBuffer !== null || searchTerm;
+    const isFiltering = activeStatus !== 'all' || activeRegion !== 'all' || activeBuffer !== null || searchTerm;
     if (properties.length === 0 || !isFiltering) {
       c.innerHTML = '<div class="empty-state" role="status"><div class="icon" aria-hidden="true">🏡</div><p>No properties to display.</p></div>';
     } else {
@@ -1572,6 +1580,28 @@ function refreshMarkers() {
   });
   clusterGroup.addLayers(layers);
 }
+// Draws a dashed connector line + a pulsing halo on the matched survey
+// point whenever a matched property is selected — independent of whether
+// the Survey Points overlay toggle is on, since the point of this is to
+// show the link for one specific property, not turn on the whole layer.
+// Cleared whenever a different (or unmatched) property is selected.
+function clearMatchHighlight() {
+  if (matchHighlightLayer) { map.removeLayer(matchHighlightLayer); matchHighlightLayer = null; }
+}
+function showMatchHighlight(p) {
+  clearMatchHighlight();
+  if (!p.surveyed || p.surveyObjectId == null) return;
+  const r = surveyRecords.find(x => x.objectId === p.surveyObjectId);
+  if (!r || !Number.isFinite(r.lat) || !Number.isFinite(r.lng) || (r.lat === 0 && r.lng === 0)) return;
+  const line = L.polyline([[p.lat, p.lng], [r.lat, r.lng]], {
+    color: '#003a8c', weight: 2, dashArray: '5,7', opacity: 0.8, pane: 'markerPane', interactive: false,
+  });
+  const halo = L.marker([r.lat, r.lng], {
+    icon: L.divIcon({ className: '', html: '<div class="match-halo"></div>', iconSize: [22, 22], iconAnchor: [11, 11] }),
+    interactive: false, keyboard: false, pane: 'markerPane', zIndexOffset: 900,
+  });
+  matchHighlightLayer = L.layerGroup([line, halo]).addTo(map);
+}
 function selectProperty(id) {
   const p = getProperty(id); if (!p) return;
   if (selectedId && markers[String(selectedId)]) {
@@ -1587,6 +1617,7 @@ function selectProperty(id) {
   } else {
     map.flyTo([p.lat, p.lng], Math.max(map.getZoom(), DEFAULT_SELECT_ZOOM), { duration: 0.9 });
   }
+  showMatchHighlight(p);
   document.querySelectorAll('.asset-card').forEach(c => c.classList.remove('selected'));
   const card = document.getElementById('card-' + p.id);
   if (card) { card.classList.add('selected'); card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
@@ -1758,7 +1789,13 @@ function toggleSurveyPointsLayer(on) {
       // property markers already use — keeps survey points reliably
       // above parcels regardless of render order.
       pane: 'markerPane',
-      radius: 5, color: '#003a8c', weight: 1.5, fillColor: '#5b8def', fillOpacity: 0.85,
+      radius: 5, weight: 1.5, fillOpacity: 0.85,
+      // Green when this survey record's address lines up with something on
+      // the acquired list, red when it doesn't — an at-a-glance data-quality
+      // check on the map, using the same address-match logic correlateAll()
+      // uses for the acquired-property side (see r.addressMatched there).
+      color: r.addressMatched ? '#1d5e2b' : '#8c1414',
+      fillColor: r.addressMatched ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed,
     }).bindPopup(() => buildSurveyPointPopupHtml(r), { maxWidth: 260 }));
   surveyPointsLayerGroup = L.layerGroup(layers).addTo(map);
 }
@@ -1774,9 +1811,12 @@ function buildSurveyPointPopupHtml(r) {
     popRow('Inspector', a[SURVEY_FIELDS.inspectorName]),
     popRow('Region', a[SURVEY_FIELDS.region]),
   ].join('');
+  const matchColor = r.addressMatched ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed;
+  const matchLabel = r.addressMatched ? 'Address matches acquired list' : 'No address match on acquired list';
   return `<div class="pop">
       <div class="pop-type" style="color:#003a8c">Survey Record</div>
       <div class="pop-name">${escapeHtml(a[SURVEY_FIELDS.address] || 'Unknown address')}</div>
+      <span class="status-pop-badge" style="background:${matchColor}18;color:${matchColor}">${matchLabel}</span>
       ${compliance ? `<span class="status-pop-badge" style="background:${compliance.color}18;color:${compliance.color}">${escapeHtml(compliance.label)}</span>` : ''}
       ${rows ? `<div class="kv-pop-list">${rows}</div>` : ''}
     </div>`;

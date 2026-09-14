@@ -150,6 +150,17 @@ Survey123 form for any property that still needs a visit.
   its markers, or its count. Re-renders just that one layer via
   `renderSurveyPointsLayer()` rather than going through
   `applyFiltersAndRender()`.
+- **Region/County now also scope the Survey Points layer** (2026-09-14,
+  follow-up to the above): a survey record's own `region`/`county`
+  attributes (`SURVEY_FIELDS.region`/`.county`) are checked in
+  `renderSurveyPointsLayer()`'s filter chain, same active state
+  (`activeRegion`/`activeCounty`) the acquisition list/map already use.
+  `applyFiltersAndRender()` now calls `renderSurveyPointsLayer()` too (it's
+  a no-op before the first survey fetch, since `surveyRecords` is still
+  empty then) so picking a Region/County re-renders both layers together.
+  Survey Status deliberately does **not** apply to this layer — every
+  record in it is already a completed survey, so the acquisition list's
+  surveyed/not-surveyed distinction has no meaning here.
 - The **"Distance from me" buffer filter was removed** (along with the
   `p.distance` calculation and the distance-based list sort) — the list
   now always sorts alphabetically by address. The **Locate/re-center
@@ -223,6 +234,73 @@ lookup passes `recenter: false` (drops the dot, doesn't move the map), while
 the explicit **Locate** button (`recenterOnUser()` → `requestLocation()`)
 still gets the default `true` and flies there as before, since that's a
 deliberate user action.
+
+## Survey Report export (.xlsx)
+Added 2026-09-14: an **"Export Survey Report"** button at the bottom of the
+filter drawer (`generateSurveyReport()`), for a downloadable summary of the
+raw survey data separate from the app's own list/map view.
+
+- **Scope**: every survey record whose own `region`/`county` attributes
+  match the currently-active **Region** and **County** filters —
+  deliberately *not* Survey Status or the Survey Points match filter, since
+  the point of the report is "every record collected in this area," not a
+  further-filtered subset. `buildSurveyReportData()` does the filtering and
+  all the derived calculations.
+- **What it computes per survey record**: whether its normalized
+  street+city matches something on the acquired list (`r.addressMatched`,
+  same logic `correlateAll()` uses), which acquired address(es) it matches,
+  and two duplicate flags:
+  - **Survey duplicate**: more than one survey record shares the exact same
+    normalized address — almost always a duplicate field submission (the
+    same property surveyed/submitted twice).
+  - **Acquisition duplicate**: a survey record's address matches more than
+    one row on the acquired list — almost always a duplicate address on
+    the acquisition list itself (the 1,300-row CSV isn't guaranteed unique
+    by address).
+- **Output**: a 3-sheet workbook — **Summary** (counts + which
+  Region/County filter was active), **Survey Records** (one row per record
+  in scope, sorted by address), and **Duplicates** (just the rows flagged
+  either way, for a quick review list). Built client-side with SheetJS
+  (`window.XLSX`, loaded from cdnjs — see `<head>`), no server involved.
+  Filename includes the active region/county and the date, e.g.
+  `HMA_Survey_Report_Middle_DavidsonCounty_2026-09-14.xlsx`.
+- **Offline fallback**: if the SheetJS CDN script didn't load (no signal in
+  the field), `generateSurveyReport()` detects `typeof XLSX === 'undefined'`
+  and exports a plain CSV of the Survey Records sheet instead (via a Blob +
+  temporary `<a download>` link) — same data, just one sheet, and a
+  same-session alert tells the user why they got a CSV instead of an xlsx.
+- Not yet tested against a real large survey dataset in a real browser —
+  worth confirming file size/row count stays comfortable and that the CDN
+  actually resolves from a field device before relying on this.
+- **Fixed 2026-09-14 — downloads blocked when embedded**: the user reported
+  the export doing nothing when this app is loaded inside an ArcGIS
+  Experience Builder widget's `<iframe>`. Root cause: both `XLSX.writeFile()`
+  and the original CSV export built a hidden `<a>` and triggered it with
+  `.click()` from script — a **script-initiated** download, which is
+  exactly what a sandboxed embedding iframe tends to block (browsers gate
+  that on the iframe's own `sandbox="allow-downloads"` token, which an app
+  running *inside* the iframe has no way to add itself). Fixed by never
+  auto-triggering a download at all: `exportSurveyReportXlsx()` now calls
+  `XLSX.write(wb, {type:'array'})` (bytes only, no auto-download) and both
+  it and `exportSurveyReportCsv()` hand their Blob to a shared
+  `presentDownloadLink()`, which renders a real, visible `<a href download
+  target="_blank">` inside `#report-download-ready` (in the filter drawer,
+  under the Export button) for the user to click **themselves**. A genuine
+  user click on a real link is a much less restricted action than a
+  script-triggered one, so this should get through even where the old
+  auto-download didn't — though if the embed's sandbox is locked down
+  enough (no `allow-downloads` at all, even for user gestures), no amount
+  of client-side JS can force a download through it; that requires whoever
+  configures the Experience Builder embed to add `allow-downloads` (and
+  `allow-popups`, for the new-tab link below) to the iframe's `sandbox`
+  attribute.
+  - Also added a general escape hatch for the same problem: an "Open the
+    app in a new tab" link (`#open-newtab-link`, always visible in the
+    filter drawer, `href` set to `location.href` in `startApp()`) — since
+    it's a real link with `target="_blank"`, clicking it opens this same
+    app in its own top-level browser tab, outside the iframe's sandbox
+    entirely, where downloads (and anything else the embed might restrict)
+    should just work normally.
 
 ## Correlation logic (the actual point of this app)
 Per user decision, a property counts as "surveyed" if **either** of two independent

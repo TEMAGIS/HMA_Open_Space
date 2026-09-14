@@ -23,6 +23,9 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
+<!-- SheetJS (window.XLSX) — used only by generateSurveyReport()'s "Export Survey Report" button.
+     If this fails to load (no signal in the field), that button falls back to a plain CSV export instead. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -150,6 +153,32 @@
   }
   .county-select:hover { background: rgba(255,255,255,0.14); }
   .county-select option { color: #111; background: #fff; }
+  .report-btn-wrap { margin-top: 4px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.18); }
+  .report-btn {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    width: 100%; background: #fff; color: var(--tema-blue); border: none;
+    border-radius: 10px; padding: 11px 12px; font-size: 13px; font-weight: 700;
+    font-family: 'DM Sans', sans-serif; cursor: pointer;
+  }
+  .report-btn:hover { background: rgba(255,255,255,0.88); }
+  .report-btn:disabled { opacity: 0.65; cursor: default; }
+  .report-btn-note { font-size: 10.5px; color: rgba(255,255,255,0.75); margin-top: 6px; text-align: center; }
+  .report-download-ready { margin-top: 8px; }
+  .report-download-ready:empty { display: none; }
+  .report-download-link {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    width: 100%; background: #FFD54A; color: #3a2b00; text-decoration: none;
+    border-radius: 10px; padding: 11px 12px; font-size: 13px; font-weight: 700;
+    font-family: 'DM Sans', sans-serif; animation: reportLinkPulse 1.6s ease-in-out 2;
+  }
+  .report-download-link:hover { background: #ffca28; }
+  .report-download-note { font-size: 10.5px; color: rgba(255,255,255,0.85); margin-top: 6px; text-align: center; }
+  @keyframes reportLinkPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,213,74,0.6); } 50% { box-shadow: 0 0 0 6px rgba(255,213,74,0); } }
+  .open-newtab-link {
+    display: block; margin-top: 10px; text-align: center; font-size: 10.5px;
+    font-weight: 600; color: rgba(255,255,255,0.75); text-decoration: underline;
+  }
+  .open-newtab-link:hover { color: #fff; }
   /* ── Map ─────────────────────────────────────────────────── */
   #map-container { flex-shrink: 0; height: 36vh; position: relative; }
   #map { width: 100%; height: 100%; }
@@ -470,7 +499,21 @@
       </div>
       <div class="active-filters" id="active-filters" aria-label="Active filters" aria-live="polite"></div>
       <div id="filter-drawer" aria-hidden="true" inert>
-        <nav id="filter-grid" aria-label="Filter properties by survey status, region and distance"></nav>
+        <nav id="filter-grid" aria-label="Filter properties by survey status, region, county and survey-point address match"></nav>
+        <div class="report-btn-wrap">
+          <button id="export-report-btn" class="report-btn" type="button" onclick="generateSurveyReport()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>
+            Export Survey Report (.xlsx)
+          </button>
+          <div class="report-btn-note">Scoped to the Region &amp; County filters above</div>
+          <!-- Populated by presentDownloadLink() as a REAL <a> the user clicks
+               themselves — a hidden auto-clicked link is exactly what an
+               embedding iframe (e.g. Experience Builder) tends to block, but a
+               genuine user click on a visible link is much more likely to get
+               through. See generateSurveyReport()/presentDownloadLink(). -->
+          <div id="report-download-ready" class="report-download-ready" hidden></div>
+          <a id="open-newtab-link" href="#" target="_blank" rel="noopener" class="open-newtab-link">Downloads not working in this embed? Open the app in a new tab ↗</a>
+        </div>
       </div>
     </div>
     <div id="asset-list" role="list" aria-label="Acquired property results"></div>
@@ -1365,6 +1408,11 @@ function applyFiltersAndRender() {
   updateLastRefreshed();
   refreshMarkers();
   renderList();
+  // Region/County now also scope the Survey Points map layer (not just the
+  // acquisition list/markers) — see renderSurveyPointsLayer(). Harmless to
+  // call before the first survey fetch completes (surveyRecords is still
+  // [] then; it just (re)renders an empty layer).
+  renderSurveyPointsLayer();
 }
 // ════════════════════════════════════════════════════════════════
 //  LIST RENDERING
@@ -1810,6 +1858,14 @@ function renderSurveyPointsLayer() {
   if (surveyPointsLayerGroup) { map.removeLayer(surveyPointsLayerGroup); surveyPointsLayerGroup = null; }
   const layers = surveyRecords
     .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0))
+    // Region/County now scope this layer too, same as the acquisition
+    // list/map — a survey record's own region/county attributes decide
+    // whether it's in scope. Survey Status doesn't apply here (every
+    // record in this layer is, by definition, a completed survey — the
+    // acquisition-list's surveyed/not-surveyed distinction doesn't map
+    // onto survey records themselves).
+    .filter(r => activeRegion === 'all' || r.attrs[SURVEY_FIELDS.region] === activeRegion)
+    .filter(r => activeCounty === 'all' || r.attrs[SURVEY_FIELDS.county] === activeCounty)
     // Survey Points filter (activeSurveyMatch, set via setSurveyMatchFilter):
     // 'unmatched' shows only records with no address match on the acquired
     // list — everything else about this layer/the acquisition list is
@@ -1857,6 +1913,203 @@ function buildSurveyPointPopupHtml(r) {
       ${compliance ? `<span class="status-pop-badge" style="background:${compliance.color}18;color:${compliance.color}">${escapeHtml(compliance.label)}</span>` : ''}
       ${rows ? `<div class="kv-pop-list">${rows}</div>` : ''}
     </div>`;
+}
+// ════════════════════════════════════════════════════════════════
+//  SURVEY REPORT EXPORT — "Export Survey Report" button in the filter
+//  drawer. Summarizes the currently-fetched survey records (scoped to
+//  the active Region/County filters — the same ones the acquisition
+//  list/map and the Survey Points layer use; Survey Status and the
+//  Survey Points match filter are NOT applied here, since the report is
+//  specifically about every collected survey record in that area, not a
+//  subset of them) against the acquisition list:
+//    - matched vs. not matched (address-text match, same logic as
+//      correlateAll()/r.addressMatched)
+//    - "survey duplicate": more than one survey record shares the exact
+//      same normalized street+city — usually a duplicate field
+//      submission for the same property.
+//    - "acquisition duplicate": a survey record's address matches more
+//      than one row on the acquired list — usually a duplicate address
+//      on the acquisition list itself.
+//  Exports a 3-sheet .xlsx (Summary / Survey Records / Duplicates) via
+//  SheetJS (window.XLSX, loaded from cdnjs — see <head>). Falls back to a
+//  plain CSV of the detail rows if that CDN script didn't load (e.g. no
+//  signal in the field) — still opens fine in Excel, just single-sheet.
+// ════════════════════════════════════════════════════════════════
+function buildSurveyReportData() {
+  const regionLabel = activeRegion === 'all' ? 'All Regions' : REGIONS[activeRegion].label;
+  const countyLabel = activeCounty === 'all' ? 'All Counties' : activeCounty;
+  const inScope = surveyRecords.filter(r => {
+    if (activeRegion !== 'all' && r.attrs[SURVEY_FIELDS.region] !== activeRegion) return false;
+    if (activeCounty !== 'all' && r.attrs[SURVEY_FIELDS.county] !== activeCounty) return false;
+    return true;
+  });
+
+  // Address-key -> survey records sharing it, within the filtered scope —
+  // more than one means duplicate field submissions for the same address.
+  const surveyKeyIndex = new Map();
+  inScope.forEach(r => {
+    const key = correlationKey(r.street, r.city);
+    if (!key || key === '@') return;
+    if (!surveyKeyIndex.has(key)) surveyKeyIndex.set(key, []);
+    surveyKeyIndex.get(key).push(r);
+  });
+
+  // Address-key -> acquired properties sharing it (statewide list, not
+  // filtered — a survey record should still show its acquisition match
+  // even if that acquired property happens to sit in a different county
+  // field value/typo) — lets each survey record list which acquisition
+  // record(s) it lines up with, and flags when more than one acquired
+  // property shares that same address.
+  const acqKeyIndex = new Map();
+  properties.forEach(p => {
+    const key = correlationKey(p.address, p.city);
+    if (!key || key === '@') return;
+    if (!acqKeyIndex.has(key)) acqKeyIndex.set(key, []);
+    acqKeyIndex.get(key).push(p);
+  });
+
+  const rows = inScope.map(r => {
+    const a = r.attrs;
+    const key = correlationKey(r.street, r.city);
+    const dupSurveyRecords = (key && key !== '@') ? (surveyKeyIndex.get(key) || [r]) : [r];
+    const matchedAcq = (key && key !== '@') ? (acqKeyIndex.get(key) || []) : [];
+    const complianceLabel = complianceInfo(a[SURVEY_FIELDS.complianceStatus]);
+    return {
+      objectId: r.objectId,
+      inspected: fmtDateOnly(a[SURVEY_FIELDS.inspectionDate]),
+      inspector: a[SURVEY_FIELDS.inspectorName] || '',
+      region: a[SURVEY_FIELDS.region] || '',
+      county: a[SURVEY_FIELDS.county] || '',
+      address: a[SURVEY_FIELDS.address] || '',
+      city: a[SURVEY_FIELDS.city] || '',
+      compliance: complianceLabel ? complianceLabel.label : (a[SURVEY_FIELDS.complianceStatus] || ''),
+      matched: !!r.addressMatched,
+      matchedAcqAddresses: matchedAcq.map(p => `${p.address}, ${p.city}`).join('; '),
+      acqDuplicate: matchedAcq.length > 1,
+      surveyDuplicate: dupSurveyRecords.length > 1,
+      surveyDuplicateCount: dupSurveyRecords.length,
+    };
+  });
+  rows.sort((a, b) => (a.address || '').localeCompare(b.address || ''));
+
+  const matchedCount = rows.filter(r => r.matched).length;
+  return {
+    regionLabel, countyLabel, rows,
+    matchedCount, notMatchedCount: rows.length - matchedCount,
+    surveyDupCount: rows.filter(r => r.surveyDuplicate).length,
+    acqDupCount: rows.filter(r => r.acqDuplicate).length,
+  };
+}
+function reportFilenameSuffix() {
+  const parts = [];
+  if (activeRegion !== 'all') parts.push(activeRegion);
+  if (activeCounty !== 'all') parts.push(activeCounty.replace(/\s+/g, ''));
+  parts.push(new Date().toISOString().slice(0, 10));
+  return parts.join('_');
+}
+const SURVEY_REPORT_DETAIL_HEADER = [
+  'Object ID', 'Inspected', 'Inspector', 'Region', 'County', 'Survey Address', 'Survey City',
+  'Compliance Status', 'Matches Acquisition List', 'Matched Acquisition Address(es)',
+  'Duplicate Acquisition Match?', 'Duplicate Survey Submission?', 'Survey Duplicate Count',
+];
+function surveyReportDetailRow(r) {
+  return [
+    r.objectId, r.inspected, r.inspector, r.region, r.county, r.address, r.city, r.compliance,
+    r.matched ? 'Yes' : 'No', r.matchedAcqAddresses,
+    r.acqDuplicate ? 'Yes' : 'No', r.surveyDuplicate ? 'Yes' : 'No', r.surveyDuplicateCount,
+  ];
+}
+function exportSurveyReportXlsx(data) {
+  const wb = XLSX.utils.book_new();
+  const summaryWs = XLSX.utils.aoa_to_sheet([
+    ['HMA Open Space — Survey Records Report'],
+    ['Generated', new Date().toLocaleString()],
+    ['Region filter', data.regionLabel],
+    ['County filter', data.countyLabel],
+    [],
+    ['Total survey records in scope', data.rows.length],
+    ['Matched to acquisition list', data.matchedCount],
+    ['Not matched to acquisition list', data.notMatchedCount],
+    ['Survey records sharing an address with another survey record (possible duplicate submissions)', data.surveyDupCount],
+    ['Survey records matching more than one acquisition-list record (possible duplicate on acquisition list)', data.acqDupCount],
+  ]);
+  summaryWs['!cols'] = [{ wch: 78 }, { wch: 24 }];
+  XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+
+  const detailWs = XLSX.utils.aoa_to_sheet([SURVEY_REPORT_DETAIL_HEADER, ...data.rows.map(surveyReportDetailRow)]);
+  detailWs['!cols'] = [8, 10, 18, 8, 14, 26, 16, 16, 10, 32, 10, 10, 8].map(wch => ({ wch }));
+  XLSX.utils.book_append_sheet(wb, detailWs, 'Survey Records');
+
+  const dupRows = data.rows.filter(r => r.surveyDuplicate || r.acqDuplicate);
+  if (dupRows.length) {
+    const dupWs = XLSX.utils.aoa_to_sheet([SURVEY_REPORT_DETAIL_HEADER, ...dupRows.map(surveyReportDetailRow)]);
+    dupWs['!cols'] = detailWs['!cols'];
+    XLSX.utils.book_append_sheet(wb, dupWs, 'Duplicates');
+  }
+  // XLSX.writeFile() builds its own hidden <a> and clicks it via script —
+  // exactly the pattern an embedding iframe (Experience Builder, etc.)
+  // tends to block. XLSX.write(..., {type:'array'}) instead just hands
+  // back the raw bytes so we can present a real, visible link for the
+  // user to click themselves — see presentDownloadLink()/generateSurveyReport().
+  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  presentDownloadLink(blob, `HMA_Survey_Report_${reportFilenameSuffix()}.xlsx`);
+}
+function csvEscape(v) {
+  const s = String(v ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function exportSurveyReportCsv(data, note) {
+  const lines = [SURVEY_REPORT_DETAIL_HEADER, ...data.rows.map(surveyReportDetailRow)]
+    .map(row => row.map(csvEscape).join(','));
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  presentDownloadLink(blob, `HMA_Survey_Report_${reportFilenameSuffix()}.csv`, note);
+}
+// Renders a REAL, visible <a href download> the user clicks themselves,
+// instead of any script-triggered/hidden-anchor auto-download. Some
+// embedding contexts (e.g. this app loaded inside an ArcGIS Experience
+// Builder widget's iframe) block script-initiated downloads outright but
+// still allow a genuine user click on a link — so this is deliberately
+// the ONLY download path the report uses, not just a fallback. Revokes
+// the previous report's object URL (if any) so repeat exports don't leak
+// memory.
+let lastReportUrl = null;
+function presentDownloadLink(blob, filename, note) {
+  if (lastReportUrl) { URL.revokeObjectURL(lastReportUrl); lastReportUrl = null; }
+  const url = URL.createObjectURL(blob);
+  lastReportUrl = url;
+  const box = document.getElementById('report-download-ready');
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = `
+    <a href="${url}" download="${escapeHtml(filename)}" target="_blank" rel="noopener" class="report-download-link">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>
+      Tap to download ${escapeHtml(filename)}
+    </a>
+    ${note ? `<div class="report-download-note">${escapeHtml(note)}</div>` : ''}`;
+}
+function generateSurveyReport() {
+  const btn = document.getElementById('export-report-btn');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
+  try {
+    const data = buildSurveyReportData();
+    if (!data.rows.length) {
+      alert('No survey records match the current Region/County filters — nothing to export.');
+      return;
+    }
+    if (typeof XLSX !== 'undefined') {
+      exportSurveyReportXlsx(data);
+    } else {
+      console.warn('XLSX library unavailable (CDN unreachable?) — falling back to CSV export.');
+      exportSurveyReportCsv(data, 'Could not load the Excel export library (no internet connection?) — this is a CSV file instead, which opens fine in Excel.');
+    }
+  } catch (err) {
+    console.error('Report generation failed:', err);
+    alert('Something went wrong generating the report — check the browser console for details.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2223,6 +2476,12 @@ async function startApp() {
   bindListHandlers();
   initMap();
   revealApp();
+  // The "open in a new tab" escape hatch (see report-btn-wrap in the
+  // filter drawer) needs the page's own URL — set once here rather than
+  // hardcoded, so it works the same whether this is hosted standalone or
+  // embedded (e.g. inside an ArcGIS Experience Builder widget's iframe).
+  const newTabLink = document.getElementById('open-newtab-link');
+  if (newTabLink) newTabLink.href = location.href;
   applyFiltersAndRender();
   fitToProperties();
   // Both map layers are always on — no user-facing toggle for either.

@@ -611,6 +611,83 @@ removed too; `.nav-btn`/`.nav-btn.goo` stay.
   assumption (consistent with it being in the same broader AGOL environment) that this
   app's org token will also satisfy it. Needs live verification once deployed.
 
+## Selecting a distant/suspect match cut the connector line off-screen
+Fixed 2026-09-14. User feedback (screenshots): clicking a survey point
+whose matched acquisition property is miles away (a `p.locationSuspect`
+case — the banner reads "Acquisition list location may be wrong — matched
+survey point is 3.5 mi away") zoomed the map in on the acquisition point
+as usual, but that meant the OTHER end of the dashed connector line
+(`showMatchHighlight()`) — 3.5 miles away — was off-screen, with no way to
+see where the line actually led without manually panning/zooming out.
+
+`selectProperty(id)` (used by both the acquisition marker/list card click
+path and, since the click-behavior fix above, the survey-point click path)
+now looks up the matched survey record's own coordinates up front, and
+adds a corrective step, `ensureMatchVisible()`, that runs after the map
+settles wherever the normal selection flow put it (the
+`clusterGroup.zoomToShowLayer()` callback, or a `map.once('moveend', ...)`
+after the plain `flyTo()` — needed because `flyTo` is animated, so the
+check has to wait for the animation to actually finish rather than
+inspecting the pre-flight bounds): if the matched survey point isn't
+already inside the current view (`map.getBounds().contains(...)`), it
+pulls back out with `map.flyToBounds()` over both points (capped at
+`maxZoom: map.getZoom()` so it only ever zooms OUT to fit both, never in
+past where the marker already was). For a normal nearby match the survey
+point is already on screen, so this is a no-op — only a genuinely distant/
+suspect match triggers the extra zoom-out. One accepted trade-off: for a
+far-enough match, the acquisition marker can end up re-covered by its
+marker-cluster bubble again after the zoom-out (expected at a more zoomed-
+out view) — the dashed line and the survey point's own pulsing halo marker
+(not clustered) stay visible either way, which is the part that mattered
+here.
+
+## Address normalization: apostrophes, and inconsistent survey-point symbols
+Fixed 2026-09-14. User feedback (screenshots): "323 Neely's Bend Road"
+showed Surveyed/Full Compliance on the acquisition side (a connector line
+drawn to a real nearby survey point), but the survey point at the other
+end of that line — and other clearly-related points nearby — still showed
+the plain yellow "No Address Match" X, reading as an outright
+inconsistency ("matched survey points showing up as unmatched", "some
+matched addresses showing up with the wrong symbol"). Two separate root
+causes, both fixed:
+
+1. **`normAddr()` was splitting possessive street names on the
+   apostrophe.** The final cleanup step (`.replace(/[^A-Z0-9 ]/g, ' ')`)
+   turns every non-alphanumeric character into a SPACE, not just strips
+   it — so "NEELY'S" became two tokens, `"NEELY"` and `"S"`, while the
+   survey layer's "Neelys" (no apostrophe) stayed one token, `"NEELYS"`.
+   The two addresses then normalized to different strings no matter how
+   well the rest agreed, so neither the exact address-text match nor the
+   newer partial-match tier (`streetCore()`, built on top of the same
+   `normAddr()`) could ever line them up. Fixed by stripping apostrophes
+   (straight `'` and curly `’`) entirely, as a dedicated step BEFORE that
+   general replacement, so "NEELY'S" and "NEELYS" now both normalize to
+   "NEELYS". Same fix benefits any other possessive TN street name
+   (O'Brien, etc.) — verified with a standalone Node script for the exact
+   reported case plus a curly-apostrophe variant and an "O'Brien"-style
+   case; all now normalize identically on both sides.
+2. **Survey Points map coloring only reflected the exact-text-match tier,
+   not what a property actually matched by.** `r.addressMatched` (green
+   check) was always meant as a pure address-text-quality signal,
+   deliberately independent of which property (if any) claims a record —
+   but that meant a survey record that WAS the real reason a property
+   showed "Surveyed" (matched via plain proximity, or the partial-address
+   tier) still painted as a plain yellow "no match" X, since neither of
+   those tiers touched `r.addressMatched`. To a field user comparing the
+   two layers side by side, that reads as a bug, not a subtle distinction.
+   `correlateAll()` now also flags `r.proximityMatched` (mirroring the
+   existing `r.partialMatched`) whenever a survey record is within
+   `CONFIG.proximityMatchFeet` of a property, regardless of which tier
+   ultimately "wins" as that property's official match — and
+   `surveyMatchState(r)` now treats `r.partialMatched OR
+   r.proximityMatched` as the blue "partial" state (not just
+   `partialMatched` alone). So a survey record now shows green only when
+   its own address text is an exact match, blue when it correlated to a
+   property some other way (proximity or partial-address), and yellow
+   only when it truly matched nothing at all — consistent with whatever
+   the connected acquisition property's own Surveyed/Not Surveyed status
+   says.
+
 ## Filter drawer: full-screen instead of a capped dropdown
 Fixed 2026-09-14. User feedback (screenshot): opening Filter showed the
 Survey Status/Region rows, then cut off mid-way through Survey Points (map)
@@ -652,8 +729,23 @@ just didn't fit in 480px.
   (844px/896px); shorter screens (iPhone SE 667px, a small-Android 640px)
   still need a short scroll to reach the two export buttons — a reasonable
   fallback, not a regression, and far less scrolling than the old 480px cap
-  needed on any screen. Also checked the ≥900px desktop split-view layout —
-  the drawer centers correctly over the list column.
+  needed on any screen.
+- **Fixed 2026-09-14 (same day, second pass)** — at the ≥900px desktop
+  split-view width, the drawer's own `max-width:480px; margin:0 auto;`
+  (matching how `#app` centers itself) centered it across the FULL
+  viewport width, not over the 420px list column specifically — obvious
+  once the user saw it in a wide ArcGIS Experience Builder embed (well
+  over 900px), where it floated in the middle of the screen, disconnected
+  from both the Filter button that opened it (which lives in the list
+  column) and the list itself. `#detail-content` already solves the exact
+  same problem for the detail sheet with a `left:0; right:auto; width:
+  420px; margin:0;` override inside the existing `@media (min-width:
+  900px)` block — added the identical override for `#filter-drawer`, so it
+  now sits flush over the list column at desktop widths instead of
+  centered across the whole window. Verified via the same headless-
+  Chromium approach at a wide (1148px) viewport matching the user's embed
+  screenshot: drawer's `getBoundingClientRect()` now reports `{x:0,
+  width:420}`, flush against the list column.
 
 ## Still needed before this can go live
 - **Hosting**: `https://temagis.github.io/HMA_Open_Space/` needs a real GitHub Pages

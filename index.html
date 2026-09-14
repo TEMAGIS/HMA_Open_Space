@@ -412,6 +412,13 @@
     #list-section  { grid-column: 1; grid-row: 2; border-right: 1px solid var(--border); }
     #map-container { grid-column: 2; grid-row: 2; height: 100%; }
     #detail-content { left: 0; right: auto; bottom: 0; width: 420px; max-width: 420px; margin: 0; max-height: calc(100vh - 60px); }
+    /* Same reasoning as #detail-content just above: at this width #app
+       becomes a 420px list + map grid, and the Filter button that opens
+       this drawer lives in the list column — so the drawer should sit
+       flush over that column, not centered across the whole (possibly
+       much wider, e.g. embedded full-width) viewport. Fixed 2026-09-14
+       after user feedback that it was appearing centered over the map. */
+    #filter-drawer { left: 0; right: auto; width: 420px; max-width: 420px; margin: 0; }
   }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
   .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
@@ -723,9 +730,17 @@ const SURVEY_PARTIAL_COLOR = '#2563EB';
 // Returns 'matched' | 'partial' | 'none' for a survey record — the single
 // source of truth surveyPointIcon(), buildSurveyPointPopupHtml(), and the
 // Survey Points (map) filter all key off, so the three stay in sync.
+// 'matched' (green) = this record's address text lines up EXACTLY with
+// something on the acquired list (r.addressMatched — a pure text-quality
+// signal). 'partial' (blue) = it correlated to a property some other way
+// — the partial-address tier (r.partialMatched) or plain proximity
+// (r.proximityMatched, see correlateAll()) — real correlations, just not
+// an exact text match, so this record is NOT "no match" even though its
+// own address text alone wouldn't have found it. 'none' (yellow X) = no
+// correlation to any acquired property was found at all.
 function surveyMatchState(r) {
   if (r.addressMatched) return 'matched';
-  if (r.partialMatched) return 'partial';
+  if (r.partialMatched || r.proximityMatched) return 'partial';
   return 'none';
 }
 function regionColor(region) { return (REGIONS[region] && REGIONS[region].color) || '#5a6472'; }
@@ -768,7 +783,18 @@ const ADDR_ABBR = [
 ];
 function normAddr(s) {
   if (!s) return '';
-  let u = String(s).toUpperCase().replace(/[.#]/g, '');
+  // Fixed 2026-09-14 — real, reported false-negative: "323 NEELY'S BEND
+  // ROAD" (acquired list) vs. "323 Neelys Bend Rd" (survey record) is the
+  // same street, but apostrophes used to fall through to the generic
+  // non-alphanumeric-to-SPACE replacement below, so "NEELY'S" became two
+  // tokens ("NEELY", "S") while "NEELYS" stayed one — the two addresses
+  // then normalized to different strings and neither the exact address
+  // match nor the partial-match tier (see streetCore()) could ever line
+  // them up, no matter how the rest of the address agreed. Apostrophes
+  // (straight or curly) are dropped entirely here — BEFORE that general
+  // replacement — so a possessive street name normalizes the same
+  // whether or not the source data included the apostrophe.
+  let u = String(s).toUpperCase().replace(/[.#]/g, '').replace(/['’]/g, '');
   ADDR_ABBR.forEach(([pat, rep]) => { u = u.replace(pat, rep); });
   u = u.replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
   return u;
@@ -1233,8 +1259,9 @@ function correlateAll() {
     const k = correlationKey(r.street, r.city);
     r.addressMatched = !!(k && k !== '@' && propAddrKeys.has(k));
     // Reset each run — re-derived below as properties claim records via
-    // the partial-match tier (see PARTIAL ADDRESS MATCH pass).
+    // the partial-match and plain-proximity tiers.
     r.partialMatched = false;
+    r.proximityMatched = false;
   });
   properties.forEach(prop => {
     const key = correlationKey(prop.address, prop.city);
@@ -1263,6 +1290,19 @@ function correlateAll() {
       }
     }
     const proxHit = nearest && nearestFt <= CONFIG.proximityMatchFeet;
+    // Flag BOTH candidate records as correlated — not just whichever one
+    // ends up as this property's officially "matched" record below — so
+    // the Survey Points map layer's own color reflects every real
+    // correlation, not only the winning tier. Fixed 2026-09-14: a survey
+    // record that matched a property purely by proximity (its address
+    // text didn't line up, or didn't line up exactly) used to still show
+    // as a plain yellow "No Address Match" X on the map even though it
+    // WAS the record that made that property show "Surveyed" — reads as
+    // an outright bug to a field user comparing the two layers side by
+    // side, even though the underlying r.addressMatched (exact-text-only)
+    // signal was working as designed. See surveyMatchState().
+    if (proxHit) nearest.proximityMatched = true;
+    if (partial) partial.partialMatched = true;
     const methods = [];
     let matched = null;
     if (addrHits.length) { methods.push('address'); matched = addrHits[0]; }
@@ -1279,7 +1319,6 @@ function correlateAll() {
     if (!matched && partial) {
       methods.push('partial');
       matched = partial;
-      partial.partialMatched = true;
     }
     // matchDistanceFt is always the real distance between the acquisition
     // point and whichever record was matched (address, proximity, or
@@ -1839,12 +1878,41 @@ function selectProperty(id) {
   }
   selectedId = p.id;
   const mk = markers[String(p.id)];
+  // The matched survey point's own coordinates, if any — same lookup
+  // showMatchHighlight() does, needed here too so the view can be
+  // corrected to include it. See ensureMatchVisible() below.
+  const matchedRecord = (p.surveyed && p.surveyObjectId != null)
+    ? surveyRecords.find(x => x.objectId === p.surveyObjectId) : null;
+  const hasMatchGeom = matchedRecord && Number.isFinite(matchedRecord.lat) && Number.isFinite(matchedRecord.lng) && !(matchedRecord.lat === 0 && matchedRecord.lng === 0);
+  // Fixed 2026-09-14: for a distant/locationSuspect match — the acquired-
+  // list point and its matched survey point can be miles apart, see
+  // CONFIG.suspectLocationFeet — selecting the property used to always
+  // zoom in on just the acquisition point, cutting the dashed connector
+  // line (showMatchHighlight()) off at the edge of the screen with no way
+  // to see where it actually led. Called once the map has settled on the
+  // acquisition point (whichever path got it there below) — if the
+  // matched survey point isn't already in view, pulls back out just far
+  // enough to fit both. A no-op for a normal nearby match (already on
+  // screen, so the bounds check below passes immediately) — only a
+  // distant match actually triggers this second adjustment.
+  const ensureMatchVisible = () => {
+    if (!hasMatchGeom || map.getBounds().contains([matchedRecord.lat, matchedRecord.lng])) return;
+    map.flyToBounds([[p.lat, p.lng], [matchedRecord.lat, matchedRecord.lng]], {
+      paddingTopLeft: [40, 90], paddingBottomRight: [40, 40], maxZoom: map.getZoom(), duration: 0.6,
+    });
+  };
   if (mk) {
     mk.setIcon(makeIcon(p, true));
-    if (clusterGroup && clusterGroup.hasLayer(mk)) clusterGroup.zoomToShowLayer(mk, () => mk.openPopup());
-    else { mk.openPopup(); map.flyTo([p.lat, p.lng], Math.max(map.getZoom(), DEFAULT_SELECT_ZOOM), { duration: 0.9 }); }
+    if (clusterGroup && clusterGroup.hasLayer(mk)) {
+      clusterGroup.zoomToShowLayer(mk, () => { mk.openPopup(); ensureMatchVisible(); });
+    } else {
+      mk.openPopup();
+      map.flyTo([p.lat, p.lng], Math.max(map.getZoom(), DEFAULT_SELECT_ZOOM), { duration: 0.9 });
+      map.once('moveend', ensureMatchVisible);
+    }
   } else {
     map.flyTo([p.lat, p.lng], Math.max(map.getZoom(), DEFAULT_SELECT_ZOOM), { duration: 0.9 });
+    map.once('moveend', ensureMatchVisible);
   }
   showMatchHighlight(p);
   document.querySelectorAll('.asset-card').forEach(c => c.classList.remove('selected'));

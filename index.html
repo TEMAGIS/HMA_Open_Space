@@ -202,7 +202,8 @@
   .card-cityzip { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; margin-bottom: 0; }
   .card-county { font-size: 11px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .card-type-label { font-size: 13px; font-weight: 700; letter-spacing: -0.2px; flex-shrink: 0; white-space: nowrap; width: 92px; }
-  .dist-pill { font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; color: #003a8c; background: #dce6fb; padding: 3px 8px; border-radius: 6px; flex-shrink: 0; white-space: nowrap; }
+  .dist-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; color: #003a8c; background: #dce6fb; padding: 3px 8px; border-radius: 6px; flex-shrink: 0; white-space: nowrap; }
+  .dist-pill-warn { color: #B54708; background: #FCEEE3; }
   .meta-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
   .meta-badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; white-space: nowrap; background: var(--surface2); border: 1px solid var(--border); color: var(--text2); }
   .meta-badge.region { background: #e8eef9; border-color: #b9c8e6; color: #1e3a6e; }
@@ -254,6 +255,10 @@
   .kv-pop-k { color: var(--text3); font-weight: 600; flex: 0 0 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .kv-pop-v { color: var(--text); flex: 1; min-width: 0; word-break: break-word; }
   .status-pop-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; margin-top: 6px; }
+  .loc-warn { display: flex; align-items: flex-start; gap: 6px; margin-top: 8px; padding: 6px 8px; border-radius: 8px; background: #FCEEE3; color: #B54708; font-size: 11px; font-weight: 600; line-height: 1.35; }
+  .loc-warn svg { flex-shrink: 0; margin-top: 1px; }
+  .card-loc-warn { display: flex; align-items: flex-start; gap: 5px; margin-top: 6px; padding: 5px 8px; border-radius: 8px; background: #FCEEE3; color: #B54708; font-size: 11px; font-weight: 600; line-height: 1.3; }
+  .card-loc-warn svg { flex-shrink: 0; margin-top: 1px; }
   .parcel-tpad-link { display: inline-block; margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--tema-blue); text-decoration: underline; }
   #boundary-hint {
     position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 690;
@@ -526,6 +531,16 @@ const CONFIG = {
   // many feet of it — see CORRELATION below. Tune here if field data
   // shows this is too tight/loose once live.
   proximityMatchFeet: 150,
+  // Once a property is matched to a survey record (by address and/or
+  // proximity — see correlateAll()), if the survey record's own point is
+  // further than this from the acquired-list's point, the acquired-list
+  // location itself is flagged as likely wrong rather than just quietly
+  // showing a big distance. A real surveyed property's inspector was
+  // standing at (or very near) the real location, so a large gap here
+  // usually means the CSV's lat/lng — not the survey point — is the bad
+  // one (bad geocode, transposed digits, etc.). 1 mile is a deliberately
+  // generous bar — tune down if the team wants earlier warnings.
+  suspectLocationFeet: 5280,
   // Storage keys — versioned/namespaced so this app's cache can't collide
   // with PREDS Summary/Districts if ever opened in the same browser.
   tokenKey:    'hma_os_token_v1',
@@ -594,6 +609,10 @@ const REGIONS = {
   West:      { label: 'West',      color: '#2E7D32' },
 };
 const STATUS_COLORS = { surveyed: '#2E7D32', unsurveyed: '#C52200' };
+// Distinct from both status colors (green/red) and the compliance palette,
+// so a "this location looks wrong" warning never reads as a survey-status
+// or compliance signal.
+const LOCATION_WARNING_COLOR = '#B54708';
 function regionColor(region) { return (REGIONS[region] && REGIONS[region].color) || '#5a6472'; }
 function complianceInfo(status) { return COMPLIANCE[status] || null; }
 function humanizeEnum(s) {
@@ -947,6 +966,7 @@ function buildProperties() {
     surveyed: false,
     matchMethods: [],       // subset of ['address','proximity']
     matchDistanceFt: null,
+    locationSuspect: false, // true = this property's own lat/lng looks wrong — see CONFIG.suspectLocationFeet
     surveyRecord: null,     // the matched survey feature's attrs (best match)
   }));
 }
@@ -1091,9 +1111,19 @@ function correlateAll() {
     if (matched && Number.isFinite(matched.lat) && Number.isFinite(matched.lng) && !(matched.lat === 0 && matched.lng === 0)) {
       matchDistanceFt = (matched === nearest) ? nearestFt : haversineFeet(prop.lat, prop.lng, matched.lat, matched.lng);
     }
+    // A large matchDistanceFt can only happen for an address-only match —
+    // a proximity match is, by definition, within CONFIG.proximityMatchFeet
+    // (150 ft) of the acquired point. So this flag only ever fires when the
+    // address text lines up but the two points are genuinely far apart —
+    // the acquired-list coordinate is the more likely culprit, since a
+    // surveyed property's point comes from an inspector actually standing
+    // there.
+    const locationSuspect = matchDistanceFt !== null && matchDistanceFt > CONFIG.suspectLocationFeet;
+
     prop.surveyed = methods.length > 0;
     prop.matchMethods = methods;
     prop.matchDistanceFt = matchDistanceFt;
+    prop.locationSuspect = locationSuspect;
     prop.surveyRecord = matched ? matched.attrs : null;
     prop.surveyObjectId = matched ? matched.objectId : null;
   });
@@ -1146,6 +1176,13 @@ function fmtMatchDistance(ft) {
   if (!Number.isFinite(ft)) return '';
   if (ft < 528) return `${Math.round(ft)} ft`;
   return `${(ft / 5280).toFixed(1)} mi`;
+}
+// Shared copy for the "this property's acquired-list location looks
+// wrong" warning (see CONFIG.suspectLocationFeet / correlateAll()) — used
+// in the map marker popup, the list card, and the detail sheet so the
+// wording stays consistent everywhere it shows up.
+function locationWarningText(p) {
+  return `Acquisition list location may be wrong — matched survey point is ${fmtMatchDistance(p.matchDistanceFt)} away`;
 }
 function kvSection(title, rowsHtml) {
   if (!rowsHtml) return '';
@@ -1307,7 +1344,13 @@ function renderCard(p) {
   // Distance shown on the card is the gap between the acquisition list's
   // point and the actual matched survey point — not the user's own
   // location — so it's only shown for matched records with usable geometry.
-  const dist  = (p.surveyed && Number.isFinite(p.matchDistanceFt)) ? `<span class="dist-pill">📍 ${fmtMatchDistance(p.matchDistanceFt)}</span>` : '';
+  // When that gap is large enough to flag (see CONFIG.suspectLocationFeet),
+  // the pill switches to a warning style instead of the plain blue one.
+  const dist = (p.surveyed && Number.isFinite(p.matchDistanceFt))
+    ? (p.locationSuspect
+        ? `<span class="dist-pill dist-pill-warn">${WARN_TRIANGLE_SVG} ${fmtMatchDistance(p.matchDistanceFt)}</span>`
+        : `<span class="dist-pill">📍 ${fmtMatchDistance(p.matchDistanceFt)}</span>`)
+    : '';
   // County now comes straight from the acquisition list (known for every
   // property), not just the matched survey record — falls back to the
   // survey record's county only on the off chance the list's own value
@@ -1338,6 +1381,7 @@ function renderCard(p) {
           </div>
         </div>
         ${badges ? `<div class="meta-badges">${badges}</div>` : ''}
+        ${p.locationSuspect ? `<div class="card-loc-warn">${WARN_TRIANGLE_SVG}<span>${escapeHtml(locationWarningText(p))}</span></div>` : ''}
       </div>
     </div>
     <div class="card-footer">
@@ -1455,6 +1499,7 @@ function makeIcon(p, sel = false) {
     iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
   });
 }
+const WARN_TRIANGLE_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>';
 function buildPopupHtml(p) {
   const color = p.surveyed ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed;
   const label = p.surveyed ? 'Surveyed' : 'Not Surveyed';
@@ -1464,6 +1509,7 @@ function buildPopupHtml(p) {
       <div class="pop-name">${escapeHtml(p.address)}</div>
       <div class="pop-cityzip">${escapeHtml(p.city)}${p.region ? ' · ' + escapeHtml(p.region) : ''}</div>
       ${compliance ? `<span class="status-pop-badge" style="background:${compliance.color}18;color:${compliance.color}">${escapeHtml(compliance.label)}</span>` : ''}
+      ${p.locationSuspect ? `<div class="loc-warn">${WARN_TRIANGLE_SVG}<span>${escapeHtml(locationWarningText(p))}</span></div>` : ''}
     </div>`;
 }
 function refreshMarkers() {
@@ -1955,6 +2001,14 @@ async function openDetail(id) {
         ${methodLabel ? `<div class="banner-desc">Matched by ${escapeHtml(methodLabel)}</div>` : ''}
       </div>
     </div>
+    ${p.locationSuspect ? `
+    <div class="sheet-banner" style="background:${LOCATION_WARNING_COLOR}18;border:1px solid ${LOCATION_WARNING_COLOR}40;color:${LOCATION_WARNING_COLOR};margin-top:8px;">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="${LOCATION_WARNING_COLOR}" stroke-width="2.2"><path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+      <div>
+        <div class="banner-label">Location May Be Wrong</div>
+        <div class="banner-desc">${escapeHtml(locationWarningText(p))}</div>
+      </div>
+    </div>` : ''}
     <div class="sheet-header">
       <h2 class="sheet-name" id="detail-asset-name">${escapeHtml(p.address)}</h2>
       <div class="sheet-addr">${escapeHtml(p.city)}, TN</div>

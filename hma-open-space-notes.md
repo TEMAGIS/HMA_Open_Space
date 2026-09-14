@@ -61,6 +61,15 @@ Survey123 form for any property that still needs a visit.
     `GISLINK`). **Worth a live spot-check once deployed** — if none of the candidate
     names match the real schema, that value is just omitted rather than shown wrong,
     so a silently-empty popup field is the sign to add the real name to the list.
+  - **Live example spotted 2026-09-14**: a real parcel popup showed Address
+    "HAPPY VALLEY ST" and City "233 ELIZABETHTON" — a house number stuck
+    onto the city value. That's not a blank field (which the code handles
+    fine), it's a **wrong match** — whatever field
+    `PARCEL_FIELD_CANDIDATES.city` matched on this parcel service actually
+    holds something like a site address, not a clean city name. Not fixed
+    yet — needs the real field list from this layer (a live export, like
+    the one that fixed the survey layer's schema) to pick the right
+    candidate name rather than guess again.
   - The **detail sheet's Parcel Info section** (`loadParcelInfoInto()`) was left as
     the original generic renderer (every populated attribute, labeled via
     `humanizeFieldName()`) — only the map popup was asked to be curated.
@@ -113,6 +122,35 @@ Survey123 form for any property that still needs a visit.
   (`survey-launch-btn` in `openDetail()`); no reason to offer it twice.
   `launchSurvey123()` itself is untouched, just no longer wired to a
   list-card button.
+
+## Flagging likely-wrong acquisition-list locations
+A real, live example surfaced this: a property's acquisition-list point sat
+nowhere near where its (address-matched) survey record actually was —
+visibly obvious once `showMatchHighlight()`'s dashed connector line was
+implemented, since the line ran clear off the visible map. The acquired
+CSV's lat/lng is generated separately from the survey data (see Data
+sources above) and clearly has some bad geocodes/typos in it.
+
+- `correlateAll()` now also sets `prop.locationSuspect = true` whenever
+  `matchDistanceFt > CONFIG.suspectLocationFeet` (default **5280 ft / 1
+  mile**, tunable). This can only fire for an **address-only** match — a
+  proximity match is by definition within `CONFIG.proximityMatchFeet` (150
+  ft) of the acquired point — so when it fires, the address text lined up
+  but the two points are genuinely far apart, meaning the *acquired-list*
+  coordinate (not the survey point, which came from an inspector standing
+  there) is the more likely culprit.
+- Surfaced in three places, all sharing the same wording
+  (`locationWarningText()`): the map marker popup (`buildPopupHtml()`), the
+  list card — as a warning-styled distance pill plus an explicit warning
+  line (`renderCard()`) — and a prominent warning banner at the top of the
+  detail sheet (`openDetail()`), right under the Surveyed/Not Surveyed
+  banner. Color is `LOCATION_WARNING_COLOR` (`#B54708`, amber), chosen to
+  be visually distinct from both status colors (green/red) and the
+  compliance palette.
+- This only flags properties that already have a survey match — an
+  unsurveyed property's location can't be cross-checked this way yet, so no
+  warning shows for those (a bad geocode on an unsurveyed property is
+  currently invisible until it gets surveyed and correlates).
 
 ## Correlation logic (the actual point of this app)
 Per user decision, a property counts as "surveyed" if **either** of two independent

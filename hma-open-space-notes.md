@@ -115,6 +115,71 @@ Survey123 form for any property that still needs a visit.
   point is to show *that one* link, not the whole layer. Cleared
   automatically when a different property is selected.
 
+## Acquisition-list coordinate corrections (2026-09-14)
+User spotted 8 acquired properties whose points were badly wrong on the
+map (via the location-suspect warning + just eyeballing the map) and
+listed them for correction. Fixed 7 directly in `ACQUIRED_RAW`; the root
+cause was different for each, which is worth recording since more bad
+rows likely exist in the other ~1,300:
+
+| # | Address / City | Bad value | Root cause | Fix |
+|---|---|---|---|---|
+| `i:826` | 1075 Willow Industrial Ct, Cookeville | lat 85.54, lng -36.14 (North Pole) | **lat/lng swapped** | Swapped back: lat 36.143056, lng -85.536944 |
+| `i:823` | 517 West Front St, Erin | lng +87.70 (China) | **longitude sign dropped** (should be negative — US) | Flipped sign: lng -87.70309412 |
+| `i:844` | 251 Midway Dr, Erin | lat/lng 0, 0 (Null Island) | **duplicate row** for the same address — a second, separate `i:822` entry already had good coordinates | Copied `i:822`'s coordinates (36.314313, -87.7021). Note: this address still appears **twice** in the list (`i:822` and `i:844`) — a genuine duplicate acquisition-list entry, not just a bad-coordinate one. Left both in place since fixing coordinates was the ask, but worth a follow-up decision on whether to actually be two entries. |
+| `i:709` | 1140 A & B Thompson Alley, Franklin | lat 32.93, lng -86.73 (near Montgomery, AL) | bad geocode, no obvious pattern | Re-geocoded via US Census Bureau geocoder (see below): lat 35.9149906574, lng -86.866700840824 |
+| `i:55` | 4517 Fagan St, Chattanooga | lat 34.60 (~30 mi south, in GA) | bad geocode, no obvious pattern | Re-geocoded: lat 34.998654327825, lng -85.311518882985 |
+| `i:167` | 207  Academy Street, Elizabethton (note double space in the address string) | lat 35.35 (~1° south, into NC), county "Polk County" | **whole-degree latitude typo** (36→35) — neighboring rows `i:166`/`i:168`/`i:169` on the same street all read ~36.3496; county field was also wrong, presumably a side effect of the same bad point (Polk County, TN is a real but wrong county down near the GA/NC line) | Fixed lat to 36.34956421 (matching the street's other entries) and county back to Carter County |
+| `i:827` | 1152 Tuckahoe Dr, Nashville | lat 39.26 (in Indiana) | **whole-degree latitude typo** (36→39) — longitude was already correct (-86.76) | Re-geocoded via Census to confirm: lat 36.261342874671, lng -86.760621450925 |
+| `i:68` | 18 Mona Lane, Oak Ridge | lat 34.00, lng -84.31 (Atlanta, GA area) | bad geocode | Census geocoder had no record of Mona Ln at all. **Fixed 2026-09-14** once the user supplied the correct coordinates from Google Maps: lat 36.00228282302554, lng -84.30536433195616. |
+
+Corrections for `i:709`, `i:55`, and `i:827` came from the **US Census
+Bureau's public geocoder**
+(`geocoding.geo.census.gov/geocoder/locations/onelineaddress`), a free,
+no-key, authoritative source for US street addresses — worth reusing for
+any future one-off corrections like this rather than guessing. It has
+gaps for smaller/newer streets (didn't have Mona Ln at all), so it's not
+a substitute for the survey layer's own geocode notebook when doing this
+at scale, just a good tool for a handful of one-off fixes.
+
+All 8 of the originally-flagged rows are now fixed.
+
+**Still worth doing**: this was 8 rows found by one person skimming the
+map/warnings, out of ~1,300 — the same lat/lng-swap, sign-drop, and
+whole-degree-typo patterns found here are mechanical enough that a script
+could scan the whole list for candidates (e.g., points outside a rough TN
+bounding box, or `|lat| > 90`/`|lng| > 180` outright) rather than relying
+on someone spotting each one visually. Not built yet.
+
+## Survey points getting visually buried under acquisition markers
+User report: survey points for matched properties only seemed to appear
+once the acquisition marker was selected. Both map layers were already
+always-on (see "Map layers — always on, no toggle" above) — nothing was
+actually conditional on selection. The real cause: both layers' markers
+live in the same Leaflet pane (`markerPane`), and without an explicit
+`zIndexOffset` a marker's default z-index is just its screen-Y position —
+the same rule for every marker regardless of which layer it's logically
+in. Two points sitting only a few feet to ~150ft apart (the common case
+for a good match, by construction — see the Correlation logic section)
+have near-identical screen-Y, so which one drew on top was effectively a
+coin flip. The **larger** acquisition-list circle (26-38px) could easily
+end up fully covering the **smaller** 17px survey dot underneath it —
+selecting the property just happened to draw the pulsing halo + dashed
+line right on top of everything, making it look like the survey point
+had appeared for the first time.
+
+Fixed 2026-09-14: `renderSurveyPointsLayer()`'s markers now set
+`zIndexOffset: 500`, guaranteeing survey points always render above
+acquisition markers (default offset 0) regardless of screen position —
+so the checkmark/X is visible at a glance without selecting anything.
+Trade-off worth knowing: when a survey point sits exactly on an
+acquisition marker, the survey point (now always on top) can make the
+acquisition marker itself harder to click directly at that exact pixel —
+the existing near-miss click-priority fallback (`nearestPointFeature()`,
+`POINT_CLICK_PRIORITY_PX`) helps, and the acquisition marker's visible
+edge/ring outside the smaller survey dot's footprint is still directly
+clickable.
+
 ## Filters & list UI
 - Filter drawer has three single-select filters on the **acquired-property
   list/map**: **Survey Status**, **Region**, and **County**
@@ -150,6 +215,18 @@ Survey123 form for any property that still needs a visit.
   its markers, or its count. Re-renders just that one layer via
   `renderSurveyPointsLayer()` rather than going through
   `applyFiltersAndRender()`.
+- **Survey Points filter buttons now show counts** (2026-09-14): "All" and
+  "No Address Match" each display a live number (`.fgt-count`,
+  `surveyMatchCounts` in `buildFilterGrid()`) — how many survey points that
+  option would put on the map, using the exact same scope
+  `renderSurveyPointsLayer()` itself applies (valid geometry + the active
+  Region/County), minus the match filter itself, since that's the thing
+  being counted per-option. `buildFilterGrid()` (which rebuilds these
+  counts along with everything else in the drawer) is now also called
+  right after every `correlateAll()` in `fetchSurveyRecords()` — both the
+  live-fetch success path and the cached/offline fallback paths — so the
+  counts stay current on the periodic 5-minute survey refresh too, not
+  just when a filter changes.
 - **Region/County now also scope the Survey Points layer** (2026-09-14,
   follow-up to the above): a survey record's own `region`/`county`
   attributes (`SURVEY_FIELDS.region`/`.county`) are checked in
@@ -167,6 +244,18 @@ Survey123 form for any property that still needs a visit.
   button and the user's blue dot on the map are unaffected** — that's
   still there for map navigation (`requestLocation()`/`recenterOnUser()`),
   it just no longer computes or uses a per-property distance for anything.
+- **Survey date on the list, sorted most-recent-first** (2026-09-14):
+  each surveyed property's card now shows a small date badge
+  (`surveyDateLabel` in `renderCard()`) from the matched survey record's
+  `inspection_date` (`prop.surveyDate`, set in `correlateAll()` alongside
+  `prop.surveyRecord`). The list's default sort (`getFiltered()`) changed
+  from always-alphabetical to **most-recently-surveyed first**: properties
+  with a usable survey date sort newest-first at the top
+  (`surveyDateMs()` handles the blank/unparseable-date edge cases so
+  those never silently corrupt the sort); anything without one — not
+  surveyed, or surveyed but the matched record's `inspection_date` is
+  blank — falls to the bottom, alphabetical among themselves, same as the
+  old default behavior for the whole list.
 - Each list card's footer now has a single **Details** button only — the
   **Survey123 launch button was removed from the list card** since the
   detail sheet already has its own "Launch Survey123" button
@@ -215,6 +304,33 @@ mirroring how `buildSurveyPointPopupHtml()` already opens with "Survey
 Record" in blue. The Surveyed/Not Surveyed status (previously the popup's
 top line) moved down into a badge alongside the compliance badge, so the
 very first thing a user reads now identifies the pin type, not its status.
+
+## Detail-sheet wording: separating "how matched" from "how far apart"
+User feedback on a screenshot of the detail sheet's SURVEYED banner:
+"Matched by address match and within 115 ft of a survey point" — asked
+whether that meant the survey location is 115 ft from the acquisition-list
+location. It does (it's the same `p.matchDistanceFt` used everywhere else
+— the card's 📍 pill, the location-suspect warning), but the sentence
+didn't say so; it read like "within 115 ft" was describing *how* the
+proximity match was found, not stating a distance between two points.
+
+Fixed 2026-09-14 by splitting the two ideas apart everywhere the detail
+sheet shows them:
+- `matchMethodLabel(p)` now says ONLY how the match was found — "address
+  text", "location proximity", or "address text and location proximity" —
+  no distance figure in it at all.
+- New `matchDistanceLine(p)` states the distance on its own, worded so
+  it's unambiguous: `"115 ft between the list location and the survey
+  point"`. Shown as its own line in the SURVEYED banner (skipped there
+  when `p.locationSuspect` is true, since the amber "Location May Be
+  Wrong" banner right below already states the same number — no reason to
+  say it twice) and as an always-visible **"List-to-Survey Distance"** row
+  in the Status section of the detail sheet, so it's there even when
+  there's no banner to catch it.
+- Added a `title` tooltip ("Distance between the acquisition-list location
+  and the matched survey point") to the 📍/⚠ distance pill on list cards
+  and map popups (`renderCard()`'s `dist`), for the same reason — it was
+  showing the right number with no label at all.
 
 ## Map zoom on load
 `initMap()` starts the map at a static statewide view (`[35.85, -86.4]`,
@@ -302,6 +418,59 @@ raw survey data separate from the app's own list/map view.
     entirely, where downloads (and anything else the embed might restrict)
     should just work normally.
 
+## Validate Acquisition Locations export (.xlsx)
+Added 2026-09-14, alongside the manual coordinate fixes above: the user asked
+whether the "scan the whole acquisition list for likely-bad coordinates"
+idea (originally floated as a one-off notebook) could instead be a
+downloadable export inside the app itself, like the Survey Report. It is —
+a second button, **"Validate Acquisition Locations"** (`#validate-locations-btn`,
+outlined/secondary style so it doesn't compete with the primary Survey
+Report button), right below Export Survey Report in the filter drawer,
+sharing the same scoping note, `presentDownloadLink()` mechanism, and
+online-doesn't-matter offline-CSV-fallback pattern.
+
+- **Scope**: same as the Survey Report — properties whose own
+  `region`/`county` match the active Region/County filters.
+  `buildLocationValidationData()` does the filtering and flagging.
+- **What it checks per property** (`validateAcquisitionLocation(p)`),
+  modeled directly on the actual bad-coordinate patterns found and fixed
+  by hand this session (see "Acquisition-list coordinate corrections"
+  above):
+  - Missing/non-numeric coordinates, or exactly `0,0` (Null Island).
+  - Latitude/longitude outside their valid ranges (`>90`/`>180`).
+  - Positive longitude (should always be negative for a US location) —
+    catches the sign-dropped case (e.g. Erin → China).
+  - Outside a coarse Tennessee bounding box (`TN_BBOX`, lat 34.9–36.75,
+    lng -90.4 to -81.5) — a deliberately loose rectangle, not a precise
+    state-boundary check, so it flags "obviously nowhere near TN" without
+    false-flagging real border-adjacent addresses.
+  - When a point is out-of-bbox, also checks whether swapping lat/lng
+    would land it back in the box, and if so calls it out specifically as
+    a likely **swap** (the exact Cookeville → North Pole pattern).
+  - Duplicate coordinates and duplicate addresses across the in-scope
+    list, reusing the same normalized-address comparison the Survey
+    Report's duplicate detection uses — this surfaces a lot more than the
+    8 originally-reported rows (spot-checked against the full 1,300-row
+    list: ~55 duplicate-coordinate groups and ~62 duplicate-address
+    groups list-wide, including one Jackson-area cluster of 100+ rows
+    sharing a single coordinate, and ~20 rows all sharing the "500 Steam
+    Plant Road, Gallatin" coordinate) — worth a look, not necessarily all
+    errors, since some acquisitions genuinely share a site.
+- **Output**: a 2-sheet workbook — **Summary** (counts + active
+  Region/County filter) and **Flagged Locations** (only the rows with at
+  least one issue, sorted by address, with an "Issues Flagged" column
+  listing every issue found for that row in plain English). Properties
+  with no issues aren't listed at all — the report is meant to be a short
+  punch list, not a full dump of all 1,300 rows.
+- If nothing in scope is flagged, `generateLocationValidationReport()`
+  alerts the user instead of producing an empty file.
+- Validated against the live 1,300-row `ACQUIRED_RAW` dataset via a
+  throwaway Node script before shipping: zero false positives, and all 8
+  of the previously-fixed rows (see above) now come back clean.
+- Not yet run by the user against the real list — the duplicate counts
+  above are informational, surfaced here so they're not a surprise the
+  first time this export is used.
+
 ## Correlation logic (the actual point of this app)
 Per user decision, a property counts as "surveyed" if **either** of two independent
 checks matches — not just one — because the real survey export shows why both are
@@ -326,18 +495,21 @@ manual retry) against the full, static acquired list. It's an intentionally brut
 O(properties × geo-tagged survey records) nested loop — realistic volumes here (~1,300
 × a few hundred) are trivial for the browser; no spatial index was worth the complexity.
 
-## Survey123 deep link
-Each property's "Survey123" button/action opens:
+## Survey123 deep link — removed 2026-09-14
+The detail sheet used to have a "Launch Survey123 for This Property" button
+(and, before that, a matching one on the list card, removed in an earlier
+session) that opened:
 `https://survey123.arcgis.app/?itemID=e59afef666a2407085c631d624b89c02&field:address=...&field:city=...&field:region=...&center=lat,lng`
-- `itemID` and the base URL are exactly what the user provided.
-- `field:address`, `field:city`, `field:region` prefill those exact questions — safe
-  to hardcode because those are the field names confirmed against the real survey
-  export, not a guess.
-- `center=lat,lng` centers the form's map on the property regardless of what the
-  form's own geopoint question is named (a documented, schema-independent Survey123
-  URL parameter).
-- Not yet live-tested end-to-end (need the Survey123 app/web fallback to actually
-  open with those fields prefilled as expected) — worth a real-device check.
+
+Removed at the user's request, along with the "Apple Maps" link that sat
+next to "Google Maps" in the detail sheet's nav row (Google Maps stays).
+Since the Survey123 button was the only caller of `launchSurvey123()`/
+`survey123Url()`, those functions were deleted outright rather than left
+as dead code, along with their `CONFIG.survey123ItemId`/`survey123BaseUrl`
+entries and the `.survey-launch-btn`/`.survey-btn-wrap` CSS. The
+`.nav-btns` row is now a single-column layout (`grid-template-columns:
+1fr`) since only the Google Maps link remains. `.nav-btn.apl` CSS was
+removed too; `.nav-btn`/`.nav-btn.goo` stay.
 
 ## OAuth / hosting
 - New, separate AGOL app registration from PREDS Summary/Districts (per user

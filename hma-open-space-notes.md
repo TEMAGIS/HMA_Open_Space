@@ -611,6 +611,50 @@ removed too; `.nav-btn`/`.nav-btn.goo` stay.
   assumption (consistent with it being in the same broader AGOL environment) that this
   app's org token will also satisfy it. Needs live verification once deployed.
 
+## Filter drawer: full-screen instead of a capped dropdown
+Fixed 2026-09-14. User feedback (screenshot): opening Filter showed the
+Survey Status/Region rows, then cut off mid-way through Survey Points (map)
+with the export buttons entirely off-screen — the drawer was a dropdown
+capped at `max-height:480px` with its own internal scroll, and on most
+phone screens the full filter grid (Status + Region + County + the 3-option
+Survey Points row, added earlier this session) plus both export buttons
+just didn't fit in 480px.
+
+- `#filter-drawer` is now `position:fixed` covering the full viewport
+  height (capped/centered to 480px wide the same way `#app` and
+  `#detail-content` already are, so it still reads as the same phone-width
+  panel on a wide desktop screen instead of stretching edge-to-edge) —
+  slides down from `translateY(-100%)` to `translateY(0)` instead of
+  animating `max-height`. Added its own header row (`.filter-drawer-header`
+  — "Filters" title + a close `✕` button) since, full-screen, the "Filter"
+  toggle button in the list header is now covered by the drawer itself and
+  isn't available to close it.
+- **Had to move `#filter-drawer` in the DOM** — it used to be nested inside
+  `.list-controls` (itself `position:sticky`, inside `#list-section`,
+  inside `#app`). That nesting broke the full-screen `z-index` the moment
+  it was tried: `.list-controls` is `position:sticky`, which — sticky
+  positioning always does this, even at a modest `z-index:10` — creates
+  its own CSS stacking context, and `#app`'s `#header` is a flex item with
+  `z-index:100` (flex items get their own stacking context from `z-index`
+  even at `position:static`). A nested `position:fixed` descendant's
+  `z-index` is only ever compared *within its nearest stacking-context
+  ancestor* — so no matter how high `#filter-drawer`'s own `z-index` was
+  set (tried 1900), it was still capped inside `.list-controls`'s
+  context (z=10), and `#header` (z=100, a sibling context) kept painting
+  on top of it. `getBoundingClientRect()` showed the drawer correctly
+  sized to the full viewport the whole time — this was purely a paint-order
+  bug, not a sizing one, which is why it wasn't obvious from just the CSS.
+  Fixed by moving `#filter-drawer` in the HTML to be a sibling of `#app`
+  (same place `#detail-sheet` already lived, for the exact same reason).
+- Verified with a headless-Chromium script (`playwright`, since a live
+  ArcGIS sign-in isn't available in this environment) across a handful of
+  phone sizes: fits with zero scrolling at iPhone 12/11-ish heights
+  (844px/896px); shorter screens (iPhone SE 667px, a small-Android 640px)
+  still need a short scroll to reach the two export buttons — a reasonable
+  fallback, not a regression, and far less scrolling than the old 480px cap
+  needed on any screen. Also checked the ≥900px desktop split-view layout —
+  the drawer centers correctly over the list column.
+
 ## Still needed before this can go live
 - **Hosting**: `https://temagis.github.io/HMA_Open_Space/` needs a real GitHub Pages
   deployment, and that exact URL needs to be added to the AGOL app item's
@@ -619,9 +663,6 @@ removed too; `.nav-btn`/`.nav-btn.goo` stay.
   app's AGOL token (never confirmed — see above), and sanity-check a few real popups/
   detail-sheet Parcel Info sections against the generic attribute rendering to see if
   a curated, friendlier field list is worth building once the real schema is visible.
-- **Survey123 prefill live check**: confirm `field:address`/`field:city`/
-  `field:region` actually populate those questions as expected, and that `center`
-  positions the map correctly, on a real device with the Survey123 app installed.
 - **Proximity threshold**: 150 ft is a starting default (`CONFIG.proximityMatchFeet`)
   — revisit once the team has used it in the field for a bit.
 - **Attachments**: survey-record photos are fetched the same way PREDS Summary does

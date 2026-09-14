@@ -1490,24 +1490,32 @@ function makeIcon(p, sel = false) {
   const color = p.surveyed ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed;
   const sz = sel ? 38 : 26;
   const ring = sel ? `box-shadow:0 0 0 3px ${color}, 0 3px 12px rgba(0,0,0,0.35)` : `box-shadow:0 2px 6px rgba(0,0,0,0.3)`;
+  // Surveyed acquisition-list markers are a plain green circle — no
+  // checkmark glyph. The checkmark now belongs to the survey-point layer
+  // instead (see renderSurveyPointsLayer/surveyPointIcon), so it always
+  // means "this is a real, address-matched survey visit," not "this
+  // acquisition happens to have one." Not-surveyed keeps its "!" glyph
+  // unchanged, per the original design.
   const glyph = p.surveyed
-    ? `<path d="M6 12.5l3.2 3.2L18 7" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>`
+    ? ''
     : `<path d="M12 7v6" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="16.3" r="1.5" fill="#fff"/>`;
   return L.divIcon({
     className: '',
-    html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;${ring};background:${color};display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" width="${Math.round(sz*0.66)}" height="${Math.round(sz*0.66)}">${glyph}</svg></div>`,
+    html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;${ring};background:${color};display:flex;align-items:center;justify-content:center">${glyph ? `<svg viewBox="0 0 24 24" width="${Math.round(sz*0.66)}" height="${Math.round(sz*0.66)}">${glyph}</svg>` : ''}</div>`,
     iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
   });
 }
 const WARN_TRIANGLE_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>';
+const ACQUISITION_KIND_COLOR = '#6941C6';
 function buildPopupHtml(p) {
   const color = p.surveyed ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed;
   const label = p.surveyed ? 'Surveyed' : 'Not Surveyed';
   const compliance = p.surveyed ? complianceInfo(p.surveyRecord && p.surveyRecord[SURVEY_FIELDS.complianceStatus]) : null;
   return `<div class="pop">
-      <div class="pop-type" style="color:${color}">${escapeHtml(label)}</div>
+      <div class="pop-type" style="color:${ACQUISITION_KIND_COLOR}">Acquisition List Location</div>
       <div class="pop-name">${escapeHtml(p.address)}</div>
       <div class="pop-cityzip">${escapeHtml(p.city)}${p.region ? ' · ' + escapeHtml(p.region) : ''}</div>
+      <span class="status-pop-badge" style="background:${color}18;color:${color}">${escapeHtml(label)}</span>
       ${compliance ? `<span class="status-pop-badge" style="background:${compliance.color}18;color:${compliance.color}">${escapeHtml(compliance.label)}</span>` : ''}
       ${p.locationSuspect ? `<div class="loc-warn">${WARN_TRIANGLE_SVG}<span>${escapeHtml(locationWarningText(p))}</span></div>` : ''}
     </div>`;
@@ -1727,12 +1735,33 @@ function buildParcelPopupHtml(feature) {
 //  (rendered once at startup) — there's no user-facing toggle for this or
 //  the parcels layer; both just stay on.
 // ════════════════════════════════════════════════════════════════
+// Yellow — distinct from the acquisition-list green/red and from the
+// amber location-warning color — used only for a survey point with no
+// address match on the acquired list.
+const SURVEY_NOMATCH_COLOR = '#FBBF24';
+function surveyPointIcon(matched) {
+  const sz = 17;
+  const bg = matched ? STATUS_COLORS.surveyed : SURVEY_NOMATCH_COLOR;
+  // Matched: white checkmark, same shape language as the acquisition-list
+  // "surveyed" glyph used to have. Unmatched: black X, so a field user can
+  // tell "surveyed but doesn't line up with the acquired list" apart from
+  // "not surveyed" (that's the acquisition marker's separate red "!") at a
+  // glance.
+  const glyph = matched
+    ? `<path d="M3.5 8.5l2.6 2.6L12.5 4" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`
+    : `<path d="M4 4l8 8M12 4L4 12" stroke="#000" stroke-width="2" stroke-linecap="round"/>`;
+  return L.divIcon({
+    className: '',
+    html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;box-shadow:0 0 0 1.5px #fff,0 1px 4px rgba(0,0,0,0.4);background:${bg};display:flex;align-items:center;justify-content:center"><svg viewBox="0 0 16 16" width="${Math.round(sz*0.75)}" height="${Math.round(sz*0.75)}">${glyph}</svg></div>`,
+    iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
+  });
+}
 function renderSurveyPointsLayer() {
   if (surveyPointsLayerGroup) { map.removeLayer(surveyPointsLayerGroup); surveyPointsLayerGroup = null; }
   const layers = surveyRecords
     .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0))
-    .map(r => L.circleMarker([r.lat, r.lng], {
-      // pane: 'markerPane' (2026-09-12 fix) — a plain circleMarker
+    .map(r => L.marker([r.lat, r.lng], {
+      // pane: 'markerPane' (2026-09-12 fix) — a plain circleMarker/marker
       // defaults to the SAME pane the parcels polygons use
       // ('overlayPane'), where z-order is just DOM/add order, not a
       // fixed stacking rule. The parcels layer re-renders on every
@@ -1743,13 +1772,12 @@ function renderSurveyPointsLayer() {
       // property markers already use — keeps survey points reliably
       // above parcels regardless of render order.
       pane: 'markerPane',
-      radius: 5, weight: 1.5, fillOpacity: 0.85,
-      // Green when this survey record's address lines up with something on
-      // the acquired list, red when it doesn't — an at-a-glance data-quality
-      // check on the map, using the same address-match logic correlateAll()
-      // uses for the acquired-property side (see r.addressMatched there).
-      color: r.addressMatched ? '#1d5e2b' : '#8c1414',
-      fillColor: r.addressMatched ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed,
+      // Green check when this survey record's address lines up with
+      // something on the acquired list, yellow X when it doesn't — an
+      // at-a-glance data-quality check on the map, using the same
+      // address-match logic correlateAll() uses for the acquired-property
+      // side (see r.addressMatched there).
+      icon: surveyPointIcon(r.addressMatched),
     }).bindPopup(() => buildSurveyPointPopupHtml(r), { maxWidth: 260 }));
   surveyPointsLayerGroup = L.layerGroup(layers).addTo(map);
 }
@@ -2096,7 +2124,13 @@ function recenterOnUser() {
   if (userLat === null || userLng === null) { requestLocation(); return; }
   map.flyTo([userLat, userLng], Math.max(map.getZoom(), 12), { duration: 0.8 });
 }
-function onLocationSuccess(pos) {
+// `recenter: false` is used for the automatic, on-load geolocation lookup
+// (see startApp()) — it still drops the user's location dot on the map,
+// it just doesn't fly the view away from the fit-all-properties zoom that
+// startApp() already set. The explicit "Locate" button (recenterOnUser()
+// → requestLocation()) leaves recenter at its default of true, since a
+// user tapping that button clearly wants the map to jump to them.
+function onLocationSuccess(pos, { recenter = true } = {}) {
   userLat = pos.coords.latitude; userLng = pos.coords.longitude;
   cacheLocation(userLat, userLng);
   document.getElementById('loc-label').textContent = 'Located ✓';
@@ -2106,7 +2140,7 @@ function onLocationSuccess(pos) {
       icon: L.divIcon({ className: '', html: '<div class="user-dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8] }),
       zIndexOffset: 1000,
     }).addTo(map);
-    map.flyTo([userLat, userLng], 10, { duration: 1 });
+    if (recenter) map.flyTo([userLat, userLng], 10, { duration: 1 });
   } catch (err) { console.warn('Could not place/fly to the user-location marker:', err); }
 }
 function cacheLocation(lat, lng) { try { localStorage.setItem(CONFIG.locationKey, JSON.stringify({ lat, lng, ts: Date.now() })); } catch (e) {} }
@@ -2145,7 +2179,9 @@ async function startApp() {
   await fetchSurveyRecords();
   renderSurveyPointsLayer();
   fetchSurveyLayerMeta();
-  if (navigator.geolocation) navigator.geolocation.getCurrentPosition(onLocationSuccess, () => useLastKnownLocation(), { timeout: 5000 });
+  // recenter: false — show the user's dot once we have it, but don't fly
+  // the map away from the fit-all-properties view fitToProperties() just set.
+  if (navigator.geolocation) navigator.geolocation.getCurrentPosition((pos) => onLocationSuccess(pos, { recenter: false }), () => useLastKnownLocation(), { timeout: 5000 });
   else useLastKnownLocation();
   if (CONFIG.refreshInterval > 0) {
     if (refreshTimer) clearInterval(refreshTimer);

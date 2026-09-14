@@ -88,14 +88,26 @@ Survey123 form for any property that still needs a visit.
   (which do refresh). Worth fixing if it turns out to matter in the field.
 
 ## Survey Points map overlay + match highlighting
-- The **Survey Points** layer's dots are now color-coded by address match,
-  not a single fixed blue: green (`STATUS_COLORS.surveyed`) when a survey
-  record's normalized street+city matches something on the acquired list,
-  red (`STATUS_COLORS.unsurveyed`) when it doesn't — computed in
-  `correlateAll()` as `r.addressMatched`, independent of which acquired
-  property (if any) ends up "claiming" that record as its best match. Lets a
-  field user spot address-quality issues (typos, wrong addresses entered by
-  inspectors) directly on the map. The popup states the same thing in words.
+- The **Survey Points** layer's markers are color/glyph-coded by address
+  match, not a single fixed blue: a **green circle with a white check**
+  (`surveyPointIcon()`, `STATUS_COLORS.surveyed`) when a survey record's
+  normalized street+city matches something on the acquired list, a
+  **yellow circle with a black X** (`SURVEY_NOMATCH_COLOR`, `#FBBF24`) when
+  it doesn't — computed in `correlateAll()` as `r.addressMatched`,
+  independent of which acquired property (if any) ends up "claiming" that
+  record as its best match. Lets a field user spot address-quality issues
+  (typos, wrong addresses entered by inspectors) directly on the map. The
+  popup states the same thing in words.
+  - Changed 2026-09-14 from plain colored dots (`L.circleMarker`) to a
+    checkmark/X glyph (`L.marker` + `L.divIcon`, via `surveyPointIcon()`),
+    per user request, so the survey-point layer is the one that "owns" the
+    checkmark now — see the acquisition-marker note right below.
+- The **acquisition-list marker's own checkmark was removed** the same
+  day: a surveyed acquisition property (`makeIcon()`) is now a **plain
+  green circle**, no glyph — the checkmark previously shown there was
+  easy to confuse with the survey layer's own (now more prominent)
+  checkmark. Not-surveyed acquisition markers are unchanged (red circle
+  with a white "!").
 - Selecting a **matched** property (from the list or the map) draws a
   dashed connector line plus a pulsing halo (`.match-halo`) on its matched
   survey point (`showMatchHighlight()` in `selectProperty()`) — shown
@@ -151,6 +163,38 @@ sources above) and clearly has some bad geocodes/typos in it.
   unsurveyed property's location can't be cross-checked this way yet, so no
   warning shows for those (a bad geocode on an unsurveyed property is
   currently invisible until it gets surveyed and correlates).
+
+### Map popup header: which kind of pin is this?
+With survey points and acquisition-list markers both visible on the map at
+once (see "Survey Points map overlay" above), a field user could click
+either kind of pin and get a popup with no label saying which one it was.
+Fixed 2026-09-14: `buildPopupHtml()` (the acquisition-list marker) now opens
+with a bold "Acquisition List Location" header in violet (`#6941C6`,
+`ACQUISITION_KIND_COLOR` — chosen to be distinct from the survey popup's
+blue, the surveyed/unsurveyed green/red, and the location-warning amber),
+mirroring how `buildSurveyPointPopupHtml()` already opens with "Survey
+Record" in blue. The Surveyed/Not Surveyed status (previously the popup's
+top line) moved down into a badge alongside the compliance badge, so the
+very first thing a user reads now identifies the pin type, not its status.
+
+## Map zoom on load
+`initMap()` starts the map at a static statewide view (`[35.85, -86.4]`,
+zoom 7), but `startApp()` immediately calls `fitToProperties()`
+(`map.fitBounds()` over all 1,300 acquired properties, capped at
+`FIT_ALL_MAX_ZOOM = 13`) right after — so the intended default view has
+always been "fit to every collected point," not the static statewide view.
+
+That fit-all view was being **immediately undone**: `startApp()` also
+kicks off an automatic, silent `navigator.geolocation.getCurrentPosition()`
+call to place the user's location dot, and its success handler
+(`onLocationSuccess()`) unconditionally called `map.flyTo(userLocation,
+10)` — flying the map away from the just-set fit-all view to the user's own
+location, every single load. Fixed 2026-09-14: `onLocationSuccess()` now
+takes a `{ recenter }` option (default `true`); the automatic startup
+lookup passes `recenter: false` (drops the dot, doesn't move the map), while
+the explicit **Locate** button (`recenterOnUser()` → `requestLocation()`)
+still gets the default `true` and flies there as before, since that's a
+deliberate user action.
 
 ## Correlation logic (the actual point of this app)
 Per user decision, a property counts as "surveyed" if **either** of two independent

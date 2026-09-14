@@ -48,11 +48,35 @@ Survey123 form for any property that still needs a visit.
   point-intersection lookup in the detail sheet's Parcel Info section. **Its field
   schema was never confirmed** — every attempt (WebFetch, curl through the sandbox
   proxy, the linked desktop's browser signed out) got a 403 with no anonymous access,
-  and no export was provided for it the way one was for the survey layer. Its popup
-  and detail-sheet section render **every populated attribute the query returns**,
-  generically labeled (`humanizeFieldName()` turns `PARCEL_ID`/`ownerName`-style raw
-  names into "Parcel Id"/"Owner Name"), rather than a curated field list. Live
-  verification once deployed and signed in is still needed — see below.
+  and no export was provided for it the way one was for the survey layer.
+  - The **map-click popup** (`buildParcelPopupHtml()`) is now curated: Address, City,
+    Calc. Acres, and a link out to the county's TN Property Assessment (TPAD) page
+    (`https://assessment.cot.tn.gov/TPAD/Parcel/GIS?gislink=...`). Since the schema
+    was never live-verified, each value is found by matching a short list of likely
+    real field names case-insensitively (`PARCEL_FIELD_CANDIDATES` /
+    `findParcelField()`) rather than one hardcoded guess — e.g. address tries
+    `PropertyAd`, `SITUS_ADDR`, `Address`, etc. in order, first match wins. This
+    guards against the ~10-character truncated field names typical of
+    shapefile-derived TN parcel services (e.g. `PropertyAd`, `CalcAcreag`,
+    `GISLINK`). **Worth a live spot-check once deployed** — if none of the candidate
+    names match the real schema, that value is just omitted rather than shown wrong,
+    so a silently-empty popup field is the sign to add the real name to the list.
+  - The **detail sheet's Parcel Info section** (`loadParcelInfoInto()`) was left as
+    the original generic renderer (every populated attribute, labeled via
+    `humanizeFieldName()`) — only the map popup was asked to be curated.
+
+## Map layers — always on, no toggle
+- The Layers button/menu (which let you turn Parcels and Survey Points on/off
+  individually) was removed entirely — both layers are just always on now,
+  rendered once at startup (`showParcelsLayer()` / `renderSurveyPointsLayer()`
+  in `startApp()`). No `showParcels`/`showSurveyPoints` state anymore; there's
+  nothing left to toggle them off with. Parcels is still zoom-gated
+  (`PARCELS_MIN_ZOOM = 15`) and still refetches on pan/zoom past that.
+- One pre-existing limitation, unchanged by this: the Survey Points overlay
+  is built once at startup from whatever `surveyRecords` looked like then —
+  it does **not** re-render on the periodic 5-minute survey refresh, so a
+  long-running session's dots can go stale relative to the list/map markers
+  (which do refresh). Worth fixing if it turns out to matter in the field.
 
 ## Survey Points map overlay + match highlighting
 - The **Survey Points** layer's dots are now color-coded by address match,
@@ -69,6 +93,26 @@ Survey123 form for any property that still needs a visit.
   regardless of whether the Survey Points overlay toggle is on, since the
   point is to show *that one* link, not the whole layer. Cleared
   automatically when a different property is selected.
+
+## Filters & list UI
+- Filter drawer has three single-select filters now: **Survey Status**,
+  **Region**, and **County** (`activeStatus`/`activeRegion`/`activeCounty`,
+  each `'all'` == no filter). County is a native `<select>` rather than a
+  button grid — there are 42 distinct counties in the acquired list,
+  computed fresh in `buildFilterGrid()` from `properties.map(p => p.county)`
+  — too many for the button-grid pattern the other two use.
+- The **"Distance from me" buffer filter was removed** (along with the
+  `p.distance` calculation and the distance-based list sort) — the list
+  now always sorts alphabetically by address. The **Locate/re-center
+  button and the user's blue dot on the map are unaffected** — that's
+  still there for map navigation (`requestLocation()`/`recenterOnUser()`),
+  it just no longer computes or uses a per-property distance for anything.
+- Each list card's footer now has a single **Details** button only — the
+  **Survey123 launch button was removed from the list card** since the
+  detail sheet already has its own "Launch Survey123" button
+  (`survey-launch-btn` in `openDetail()`); no reason to offer it twice.
+  `launchSurvey123()` itself is untouched, just no longer wired to a
+  list-card button.
 
 ## Correlation logic (the actual point of this app)
 Per user decision, a property counts as "surveyed" if **either** of two independent

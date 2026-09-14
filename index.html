@@ -143,14 +143,13 @@
   .fgt-icon svg { width: 100%; height: 100%; }
   .fgt-label { font-size: 10px; font-weight: 700; text-align: center; line-height: 1.15; }
   .buf-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255,255,255,0.85); margin: 2px 0 6px; }
-  .buf-row { display: flex; gap: 6px; flex-wrap: wrap; }
-  .buft, .bndt {
-    padding: 6px 12px; border-radius: 16px; border: 1.5px solid rgba(255,255,255,0.35);
-    background: rgba(255,255,255,0.08); color: #fff; font-size: 12px; font-weight: 700;
-    font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all 0.15s;
+  .county-select {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid rgba(255,255,255,0.35);
+    background: rgba(255,255,255,0.08); color: #fff; font-size: 13px; font-weight: 600;
+    font-family: 'DM Sans', sans-serif; cursor: pointer; appearance: auto;
   }
-  .buft:hover, .bndt:hover { background: rgba(255,255,255,0.18); }
-  .buft.active, .bndt.active { background: #fff; color: var(--tema-blue); border-color: #fff; }
+  .county-select:hover { background: rgba(255,255,255,0.14); }
+  .county-select option { color: #111; background: #fff; }
   /* ── Map ─────────────────────────────────────────────────── */
   #map-container { flex-shrink: 0; height: 36vh; position: relative; }
   #map { width: 100%; height: 100%; }
@@ -173,46 +172,6 @@
   #basemap-toggle:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
   #fab-locate:hover { transform: scale(1.08); }
   #fab-locate:active { transform: scale(0.95); }
-  #layers-toggle {
-    position: absolute; top: 12px; left: 140px; z-index: 690;
-    background: var(--tema-blue); color: white; border: 1px solid var(--tema-blue);
-    border-radius: 8px; padding: 7px 11px;
-    display: flex; align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 700; font-family: 'DM Sans', sans-serif; white-space: nowrap;
-    cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-    min-height: 36px; transition: background 0.15s, color 0.15s;
-  }
-  #layers-toggle:hover { background: #003a8c; }
-  #layers-toggle:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-  #layers-toggle.has-layer { background: #fff; color: var(--tema-blue); border-color: #fff; }
-  #layers-menu {
-    position: absolute; top: 54px; left: 12px; z-index: 695;
-    background: var(--surface); border-radius: var(--radius-sm);
-    box-shadow: var(--shadow-lg); border: 1px solid var(--border);
-    padding: 8px; display: flex; flex-direction: column; gap: 4px;
-    min-width: 190px;
-  }
-  #layers-menu[hidden] { display: none; }
-  #layers-menu .layers-menu-label {
-    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
-    color: var(--text3); padding: 2px 6px 4px; font-family: 'DM Sans', sans-serif;
-  }
-  #layers-menu .bndt {
-    display: block; width: 100%; text-align: left;
-    background: var(--surface2); color: var(--text); border: 1.5px solid var(--border);
-    border-radius: var(--radius-sm); padding: 7px 10px;
-  }
-  #layers-menu .bndt:hover { background: var(--border); }
-  #layers-menu .bndt.active { background: var(--tema-blue); color: #fff; border-color: var(--tema-blue); }
-  #layers-menu .layers-menu-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border-radius: var(--radius-sm); border: 1.5px solid var(--border); background: var(--surface2); cursor: pointer; }
-  #layers-menu .layers-menu-toggle-row.active { background: #e8eef9; border-color: var(--tema-blue); }
-  #layers-menu .layers-menu-toggle-row span { font-size: 13px; font-weight: 700; color: var(--text); }
-  .switch { position: relative; width: 34px; height: 20px; flex-shrink: 0; }
-  .switch input { opacity: 0; width: 0; height: 0; }
-  .switch-track { position: absolute; inset: 0; background: var(--border); border-radius: 20px; transition: background 0.15s; pointer-events: none; }
-  .switch-track::before { content: ''; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px; background: #fff; border-radius: 50%; transition: transform 0.15s; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
-  .switch input:checked + .switch-track { background: var(--tema-blue); }
-  .switch input:checked + .switch-track::before { transform: translateX(14px); }
   /* ── List ────────────────────────────────────────────────── */
   #list-section { flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   .list-controls { position: sticky; top: 0; z-index: 10; background: var(--bg); box-shadow: 0 1px 0 rgba(0,0,0,0.04); }
@@ -295,6 +254,7 @@
   .kv-pop-k { color: var(--text3); font-weight: 600; flex: 0 0 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .kv-pop-v { color: var(--text); flex: 1; min-width: 0; word-break: break-word; }
   .status-pop-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; margin-top: 6px; }
+  .parcel-tpad-link { display: inline-block; margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--tema-blue); text-decoration: underline; }
   #boundary-hint {
     position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 690;
     max-width: calc(100% - 24px);
@@ -338,7 +298,6 @@
   .sheet-header { padding: 14px 20px 10px; }
   .sheet-name { font-size: 19px; font-weight: 700; letter-spacing: -0.4px; margin-bottom: 3px; }
   .sheet-addr { font-size: 13px; color: var(--text2); line-height: 1.4; }
-  .sheet-dist { font-size: 12px; font-family: 'DM Mono',monospace; font-weight: 700; margin-top: 5px; color: #003a8c; }
   .sdiv { height: 1px; background: var(--border); margin: 0 20px; }
   .sec { padding: 14px 20px; }
   .sec-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text3); margin-bottom: 8px; }
@@ -485,11 +444,6 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polygon points="12 2 22 8.5 12 15 2 8.5 12 2"/><polyline points="2 15.5 12 22 22 15.5"/></svg>
       <span class="basemap-label">Hybrid</span>
     </button>
-    <button id="layers-toggle" type="button" onclick="toggleLayersMenu()" aria-expanded="false" aria-controls="layers-menu" aria-label="Choose map layers">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polygon points="12 2 21 7 12 12 3 7 12 2"/><polyline points="3 12 12 17 21 12"/><polyline points="3 17 12 22 21 17"/></svg>
-      <span class="layers-label">Layers</span>
-    </button>
-    <div id="layers-menu" role="group" aria-label="Map layers" hidden></div>
     <button id="fab-locate" onclick="recenterOnUser()" title="Re-center on my location" aria-label="Re-center on my location">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
     </button>
@@ -969,9 +923,8 @@ let markers = {}, properties = [];      // properties = ACQUIRED_RAW enriched wi
 let surveyRecords = [];                 // raw survey layer features, current session
 let activeStatus = 'all';               // 'all' | 'surveyed' | 'unsurveyed'
 let activeRegion = 'all';               // single-select, 'all' == no region filter
-let activeBuffer = null, searchTerm = '', selectedId = null;
-let showParcels = true;                 // TN Property Parcels boundary layer — on by default
-let showSurveyPoints = true;            // overlay of raw survey-layer points — on by default
+let activeCounty = 'all';               // single-select, 'all' == no county filter
+let searchTerm = '', selectedId = null;
 let boundaryLayerGroup = null, surveyPointsLayerGroup = null, matchHighlightLayer = null;
 let boundaryMoveHandler = null, boundaryFetchToken = 0;
 let renderedList = [];
@@ -991,7 +944,6 @@ function buildProperties() {
     county: r.county || null,   // from the acquisition list itself — known for every property
     lat: r.lat,
     lng: r.lng,
-    distance: null,
     surveyed: false,
     matchMethods: [],       // subset of ['address','proximity']
     matchDistanceFt: null,
@@ -1204,17 +1156,10 @@ function escapeHtml(s) {
 }
 
 // ════════════════════════════════════════════════════════════════
-//  FILTER GRID — Survey Status (single-select) + Region (multi-select)
-//  + a distance buffer row, same interaction pattern as the PDA apps
-//  this was forked from.
+//  FILTER GRID — Survey Status (single-select) + Region (single-select)
+//  + County (single-select dropdown — too many distinct values for a
+//  button grid, so this one's a native <select> instead).
 // ════════════════════════════════════════════════════════════════
-const BUFFER_OPTIONS = [
-  { miles: null, label: 'Any distance' },
-  { miles: 100,  label: '100 mi' },
-  { miles: 50,   label: '50 mi' },
-  { miles: 25,   label: '25 mi' },
-  { miles: 10,   label: '10 mi' },
-];
 const STATUS_ICONS = {
   all: `<svg viewBox="0 0 26 26" width="22" height="22" aria-hidden="true"><circle cx="13" cy="13" r="12" fill="#002868"/><circle cx="13" cy="13" r="6" fill="#fff"/></svg>`,
   surveyed: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${STATUS_COLORS.surveyed}"/><path d="M7 12.5l3 3 7-7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
@@ -1237,42 +1182,16 @@ function buildFilterGrid() {
       <div class="fgt-icon" aria-hidden="true">${o.color ? `<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="10" fill="${o.color}"/></svg>` : STATUS_ICONS.all}</div>
       <div class="fgt-label">${o.label}</div>
     </button>`).join('');
-  const bufferBtns = BUFFER_OPTIONS.map(o => `
-    <button class="buft ${o.miles === null ? 'active' : ''}" data-miles="${o.miles === null ? '' : o.miles}"
-      aria-pressed="${o.miles === null ? 'true' : 'false'}" onclick="setBuffer(this, ${o.miles === null ? 'null' : o.miles})">${o.label}</button>`).join('');
+  const counties = [...new Set(properties.map(p => p.county).filter(Boolean))].sort();
+  const countyOpts = [`<option value="all" ${activeCounty === 'all' ? 'selected' : ''}>All Counties</option>`, ...counties.map(c =>
+    `<option value="${escapeHtml(c)}" ${activeCounty === c ? 'selected' : ''}>${escapeHtml(c)}</option>`)].join('');
   document.getElementById('filter-grid').innerHTML = `
     <div class="buf-label">Survey Status</div>
     <div class="fg-row status-row" role="group" aria-label="Filter by survey status">${statusBtns}</div>
     <div class="buf-label">Region</div>
     <div class="fg-row region-row" role="radiogroup" aria-label="Filter by region">${regionBtns}</div>
-    <div class="buf-label">Distance from me</div>
-    <div class="buf-row" role="group" aria-label="Filter by distance from my location">${bufferBtns}</div>`;
-}
-function toggleLayersMenu(forceClose = false) {
-  const menu = document.getElementById('layers-menu');
-  const btn  = document.getElementById('layers-toggle');
-  const isOpen = !menu.hidden;
-  if (forceClose || isOpen) { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
-  else { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); }
-}
-document.addEventListener('click', (e) => {
-  const menu = document.getElementById('layers-menu');
-  const btn  = document.getElementById('layers-toggle');
-  if (!menu || menu.hidden) return;
-  if (menu.contains(e.target) || btn.contains(e.target)) return;
-  toggleLayersMenu(true);
-});
-function buildLayersMenu() {
-  document.getElementById('layers-menu').innerHTML = `
-    <div class="layers-menu-label">Map layers</div>
-    <label class="layers-menu-toggle-row ${showParcels ? 'active' : ''}" id="parcels-toggle-row">
-      <span>TN Property Parcels</span>
-      <span class="switch"><input type="checkbox" id="parcels-toggle" ${showParcels ? 'checked' : ''} onchange="toggleParcelsLayer(this.checked)"><span class="switch-track"></span></span>
-    </label>
-    <label class="layers-menu-toggle-row ${showSurveyPoints ? 'active' : ''}" id="survey-points-toggle-row">
-      <span>Show survey points</span>
-      <span class="switch"><input type="checkbox" id="survey-points-toggle" ${showSurveyPoints ? 'checked' : ''} onchange="toggleSurveyPointsLayer(this.checked)"><span class="switch-track"></span></span>
-    </label>`;
+    <div class="buf-label">County</div>
+    <select id="county-filter" class="county-select" aria-label="Filter by county" onchange="setCountyFilter(this.value)">${countyOpts}</select>`;
 }
 function toggleFilterDrawer(forceClose = false) {
   const drawer = document.getElementById('filter-drawer');
@@ -1307,20 +1226,8 @@ function setRegionFilter(key) {
   updateActiveFilterBar();
   applyFiltersAndRender();
 }
-function setBuffer(el, miles) {
-  document.querySelectorAll('.buft').forEach(c => { c.classList.remove('active'); c.setAttribute('aria-pressed', 'false'); });
-  el.classList.add('active'); el.setAttribute('aria-pressed', 'true');
-  activeBuffer = miles;
-  updateActiveFilterBar();
-  if (miles !== null && userLat === null) requestLocation();
-  else applyFiltersAndRender();
-  toggleFilterDrawer(true);
-}
-function clearBufferFilter() {
-  document.querySelectorAll('.buft').forEach(c => { c.classList.remove('active'); c.setAttribute('aria-pressed', 'false'); });
-  const anyBtn = document.querySelector('.buft[data-miles=""]');
-  if (anyBtn) { anyBtn.classList.add('active'); anyBtn.setAttribute('aria-pressed', 'true'); }
-  activeBuffer = null;
+function setCountyFilter(key) {
+  activeCounty = key;
   updateActiveFilterBar();
   applyFiltersAndRender();
 }
@@ -1330,7 +1237,7 @@ function updateActiveFilterBar() {
   const chips = [];
   if (activeStatus !== 'all') chips.push({ kind: 'status', label: activeStatus === 'surveyed' ? 'Surveyed' : 'Not Surveyed' });
   if (activeRegion !== 'all') chips.push({ kind: 'region', label: REGIONS[activeRegion].label });
-  if (activeBuffer !== null) chips.push({ kind: 'buffer', label: `Within ${activeBuffer} mi` });
+  if (activeCounty !== 'all') chips.push({ kind: 'county', label: activeCounty });
   bar.innerHTML = chips.map(c =>
     `<button class="active-chip" type="button" data-clear="${c.kind}"${c.key ? ` data-key="${c.key}"` : ''} aria-label="Remove filter: ${c.label}">${c.label}<span class="active-chip-x" aria-hidden="true">×</span></button>`
   ).join('');
@@ -1342,7 +1249,7 @@ function updateActiveFilterBar() {
       const kind = chip.getAttribute('data-clear');
       if (kind === 'status') setStatusFilter('all');
       else if (kind === 'region') setRegionFilter('all');
-      else if (kind === 'buffer') clearBufferFilter();
+      else if (kind === 'county') { setCountyFilter('all'); const sel = document.getElementById('county-filter'); if (sel) sel.value = 'all'; }
     });
   }
   btn.classList.toggle('has-filter', chips.length > 0);
@@ -1353,15 +1260,14 @@ function getFiltered() {
     if (activeStatus === 'surveyed' && !p.surveyed) return false;
     if (activeStatus === 'unsurveyed' && p.surveyed) return false;
     if (activeRegion !== 'all' && p.region !== activeRegion) return false;
-    if (activeBuffer !== null && (p.distance === null || p.distance > activeBuffer)) return false;
+    if (activeCounty !== 'all' && p.county !== activeCounty) return false;
     if (searchTerm) {
       const h = `${p.address} ${p.city} ${p.region} ${p.county || ''}`.toLowerCase();
       if (!h.includes(searchTerm)) return false;
     }
     return true;
   });
-  if (userLat !== null) list.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
-  else list.sort((a, b) => a.address.localeCompare(b.address));
+  list.sort((a, b) => a.address.localeCompare(b.address));
   return list;
 }
 function applyFiltersAndRender() {
@@ -1379,7 +1285,7 @@ function applyFiltersAndRender() {
 function renderList() {
   const c = document.getElementById('asset-list');
   if (!renderedList.length) {
-    const isFiltering = activeStatus !== 'all' || activeRegion !== 'all' || activeBuffer !== null || searchTerm;
+    const isFiltering = activeStatus !== 'all' || activeRegion !== 'all' || activeCounty !== 'all' || searchTerm;
     if (properties.length === 0 || !isFiltering) {
       c.innerHTML = '<div class="empty-state" role="status"><div class="icon" aria-hidden="true">🏡</div><p>No properties to display.</p></div>';
     } else {
@@ -1415,7 +1321,7 @@ function renderCard(p) {
   const sidAttr = String(p.id).replace(/"/g, '&quot;');
   return `<article class="asset-card ${String(selectedId) === String(p.id) ? 'selected' : ''}" id="card-${p.id}"
     data-asset-id="${sidAttr}" role="listitem" tabindex="0"
-    aria-label="${escapeHtml(p.address)}, ${escapeHtml(p.city)}, ${label}${p.distance !== null ? ' — ' + p.distance.toFixed(1) + ' miles away' : ''}">
+    aria-label="${escapeHtml(p.address)}, ${escapeHtml(p.city)}, ${label}">
     <div class="card-body">
       <div class="card-strip" style="background:${color}"></div>
       <div class="card-content">
@@ -1439,10 +1345,6 @@ function renderCard(p) {
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
         Details
       </button>
-      <button class="card-action survey" data-action="survey" data-asset-id="${sidAttr}" aria-label="Launch Survey123 for ${escapeHtml(p.address)}">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-        Survey123
-      </button>
     </div>
   </article>`;
 }
@@ -1455,9 +1357,7 @@ function bindListHandlers() {
     if (btn) {
       e.stopPropagation();
       const id = btn.getAttribute('data-asset-id');
-      const action = btn.getAttribute('data-action');
-      if (action === 'survey') launchSurvey123(getProperty(id));
-      else openDetail(id);
+      openDetail(id);
       return;
     }
     const card = e.target.closest('.asset-card[data-asset-id]');
@@ -1628,9 +1528,13 @@ function selectProperty(id) {
 //  layers from the PDA+Districts app this was forked from). The exact
 //  field schema for this layer was never confirmed (it 403s without a
 //  token from any environment that isn't already signed into this
-//  AGOL org), so its popup renders EVERY populated attribute the query
-//  returns generically (see humanizeFieldName()) rather than a curated
-//  set of named fields. Statewide parcel data is far too large to ever
+//  AGOL org). The map-click popup (buildParcelPopupHtml, below) shows a
+//  curated set — address, city, calculated acreage, a TPAD link — found
+//  by matching a short list of likely real field names rather than one
+//  hardcoded guess (see PARCEL_FIELD_CANDIDATES). The detail sheet's
+//  Parcel Info section (loadParcelInfoInto) still renders every populated
+//  attribute generically (see humanizeFieldName()), since that one wasn't
+//  asked to be curated. Statewide parcel data is far too large to ever
 //  fetch in full, so — like the Districts app's Census Tracts layer —
 //  this always queries just the current map viewport, refetching
 //  (debounced) on every pan/zoom, and is gated behind a minZoom so
@@ -1644,33 +1548,12 @@ function setBoundaryHint(show, text, isError) {
   el.classList.toggle('error', !!isError);
   if (show) el.textContent = text;
 }
-function clearBoundaryLayer() {
-  if (boundaryLayerGroup) { map.removeLayer(boundaryLayerGroup); boundaryLayerGroup = null; }
-  if (boundaryMoveHandler) { map.off('moveend', boundaryMoveHandler); boundaryMoveHandler = null; }
-  setBoundaryHint(false);
-}
 function debounce(fn, wait) { let t = null; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); }; }
-async function toggleParcelsLayer(on) {
-  showParcels = on;
-  const row = document.getElementById('parcels-toggle-row');
-  if (row) row.classList.toggle('active', on);
-  updateLayersToggleLabel();
-  if (on) { await showParcelsLayer(); }
-  else { clearBoundaryLayer(); }
-}
-function updateLayersToggleLabel() {
-  const btn = document.getElementById('layers-toggle');
-  if (!btn) return;
-  const on = showParcels || showSurveyPoints;
-  btn.classList.toggle('has-layer', on);
-  const label = btn.querySelector('.layers-label');
-  if (label) label.textContent = (showParcels && showSurveyPoints) ? 'Parcels + Pts' : (showParcels ? 'Parcels' : (showSurveyPoints ? 'Survey Pts' : 'Layers'));
-}
 async function showParcelsLayer() {
   const myFetch = ++boundaryFetchToken;
-  const stillWanted = () => myFetch === boundaryFetchToken && showParcels;
+  const stillWanted = () => myFetch === boundaryFetchToken;
   if (!boundaryMoveHandler) {
-    boundaryMoveHandler = debounce(() => { if (showParcels) showParcelsLayer(); }, 600);
+    boundaryMoveHandler = debounce(() => showParcelsLayer(), 600);
     map.on('moveend', boundaryMoveHandler);
   }
   if (map.getZoom() < PARCELS_MIN_ZOOM) {
@@ -1713,7 +1596,7 @@ function nearestPointFeature(containerPoint) {
     const d = map.latLngToContainerPoint(markers[id].getLatLng()).distanceTo(containerPoint);
     if (d < bestDist) { bestDist = d; best = { kind: 'property', id, distance: d }; }
   }
-  if (showSurveyPoints && surveyPointsLayerGroup) {
+  if (surveyPointsLayerGroup) {
     surveyPointsLayerGroup.eachLayer(mk => {
       const d = map.latLngToContainerPoint(mk.getLatLng()).distanceTo(containerPoint);
       if (d < bestDist) { bestDist = d; best = { kind: 'survey', marker: mk, distance: d }; }
@@ -1748,33 +1631,58 @@ function renderParcelsFeatureCollection(fc) {
     },
   }).addTo(map);
 }
-// Generic parcel-attribute popup — see the PARCELS BOUNDARY LAYER note
-// above for why this can't be a curated field list.
+// Curated parcel popup: address, city, calculated acreage, and a link out
+// to the county's TN Property Assessment (TPAD) page. The exact field
+// schema for this layer was never confirmed live (see PARCELS BOUNDARY
+// LAYER note above), so rather than hardcode one guessed field name per
+// value, each one is looked up against a short list of likely real names
+// (case-insensitive) — typical of the shapefile-derived, ~10-character
+// truncated field names TN statewide parcel services tend to use
+// (e.g. "PropertyAd", "CalcAcreag"). First match wins; anything not
+// found is just omitted rather than shown as blank/wrong.
+const PARCEL_FIELD_CANDIDATES = {
+  address: ['PropertyAd', 'PropertyAddr', 'PropertyAddress', 'SitusAddress', 'SITUS_ADDR', 'SiteAddress', 'PropAddr', 'FullAddress', 'StreetAddr', 'Address'],
+  city:    ['PropertyCi', 'PropertyCity', 'SitusCity', 'SITUS_CITY', 'SiteCity', 'PropCity', 'City'],
+  acres:   ['CalcAcreag', 'CalcAcres', 'CalculatedAcreage', 'CalculatedAcres', 'GISAcres', 'GIS_ACRES', 'Acreage', 'TotalAcres', 'ACRES', 'Acres'],
+  gislink: ['GISLINK', 'GIS_Link', 'GisLink', 'GIS_LINK', 'ParcelID', 'PARCELID', 'ParcelId', 'MapParcelID'],
+};
+function findParcelField(props, candidates) {
+  const keys = Object.keys(props);
+  for (const name of candidates) {
+    const hit = keys.find(k => k.toLowerCase() === name.toLowerCase());
+    if (hit && !isBlank(props[hit])) return props[hit];
+  }
+  return null;
+}
 function buildParcelPopupHtml(feature) {
   const props = feature.properties || {};
-  const rows = Object.entries(props)
-    .filter(([k, v]) => !isBlank(v) && !/^(shape__|objectid$|globalid$)/i.test(k))
-    .slice(0, 24)
-    .map(([k, v]) => `<div class="kv-pop-row"><span class="kv-pop-k">${escapeHtml(humanizeFieldName(k))}</span><span class="kv-pop-v">${escapeHtml(v)}</span></div>`)
-    .join('');
+  const address = findParcelField(props, PARCEL_FIELD_CANDIDATES.address);
+  const city    = findParcelField(props, PARCEL_FIELD_CANDIDATES.city);
+  const acresRaw = findParcelField(props, PARCEL_FIELD_CANDIDATES.acres);
+  const acresNum = acresRaw !== null ? Number(acresRaw) : null;
+  const acres = Number.isFinite(acresNum) ? `${acresNum.toFixed(2)} ac` : acresRaw;
+  const gislink = findParcelField(props, PARCEL_FIELD_CANDIDATES.gislink);
+
+  const rows = [popRow('Address', address), popRow('City', city), popRow('Calc. Acres', acres)].join('');
+  const link = gislink
+    ? `<a class="parcel-tpad-link" href="https://assessment.cot.tn.gov/TPAD/Parcel/GIS?gislink=${encodeURIComponent(gislink)}" target="_blank" rel="noopener">View on TN Property Assessment (TPAD) →</a>`
+    : '';
   return `<div class="pop">
       <div class="pop-type" style="color:#616161">Property Parcel</div>
-      ${rows ? `<div class="kv-pop-list">${rows}</div>` : `<div class="pop-cityzip">No attribute data returned for this parcel.</div>`}
+      ${rows ? `<div class="kv-pop-list">${rows}</div>` : `<div class="pop-cityzip">No address/acreage data returned for this parcel.</div>`}
+      ${link}
     </div>`;
 }
 // ════════════════════════════════════════════════════════════════
 //  SURVEY POINTS OVERLAY — shows the raw survey-layer records (already
 //  fetched in full for correlation — see fetchSurveyRecords()) as small
 //  reference dots on the map, independent of the acquired-property
-//  markers above; useful for spot-checking the correlation.
+//  markers above; useful for spot-checking the correlation. Always on
+//  (rendered once at startup) — there's no user-facing toggle for this or
+//  the parcels layer; both just stay on.
 // ════════════════════════════════════════════════════════════════
-function toggleSurveyPointsLayer(on) {
-  showSurveyPoints = on;
-  updateLayersToggleLabel();
+function renderSurveyPointsLayer() {
   if (surveyPointsLayerGroup) { map.removeLayer(surveyPointsLayerGroup); surveyPointsLayerGroup = null; }
-  const row = document.getElementById('survey-points-toggle-row');
-  if (row) row.classList.toggle('active', on);
-  if (!on) return;
   const layers = surveyRecords
     .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0))
     .map(r => L.circleMarker([r.lat, r.lng], {
@@ -2024,7 +1932,6 @@ async function openDetail(id) {
     : `<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="11" fill="${color}"/><path d="M12 7v6" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="16.3" r="1.4" fill="#fff"/></svg>`;
   const fullAddr = `${p.address}, ${p.city}, TN`.trim();
   const addrEnc  = encodeURIComponent(fullAddr || `${p.lat},${p.lng}`);
-  const distLine = p.distance !== null ? `<div class="sheet-dist">📍 ${p.distance.toFixed(1)} mi away</div>` : '';
 
   const acquisitionRows = [
     kvRow('Region', p.region),
@@ -2051,7 +1958,6 @@ async function openDetail(id) {
     <div class="sheet-header">
       <h2 class="sheet-name" id="detail-asset-name">${escapeHtml(p.address)}</h2>
       <div class="sheet-addr">${escapeHtml(p.city)}, TN</div>
-      ${distLine}
     </div>
     ${kvSection('Acquisition Info', acquisitionRows)}
     ${kvSection('Survey Status', statusRows)}
@@ -2128,7 +2034,6 @@ function requestLocation() {
   navigator.geolocation.getCurrentPosition(onLocationSuccess, () => {
     if (!useLastKnownLocation()) {
       document.getElementById('loc-label').textContent = 'Locate';
-      if (activeBuffer !== null) clearBufferFilter();
       alert('Could not get your location. Please enable location access.');
     }
   }, { timeout: 10000, enableHighAccuracy: true });
@@ -2141,8 +2046,6 @@ function onLocationSuccess(pos) {
   userLat = pos.coords.latitude; userLng = pos.coords.longitude;
   cacheLocation(userLat, userLng);
   document.getElementById('loc-label').textContent = 'Located ✓';
-  properties.forEach(p => { p.distance = haversineFeet(userLat, userLng, p.lat, p.lng) / 5280; });
-  applyFiltersAndRender();
   try {
     if (userMarker) map.removeLayer(userMarker);
     userMarker = L.marker([userLat, userLng], {
@@ -2159,8 +2062,6 @@ function useLastKnownLocation() {
   if (!cached) return false;
   userLat = cached.lat; userLng = cached.lng;
   document.getElementById('loc-label').textContent = 'Last known';
-  properties.forEach(p => { p.distance = haversineFeet(userLat, userLng, p.lat, p.lng) / 5280; });
-  applyFiltersAndRender();
   try {
     if (userMarker) map.removeLayer(userMarker);
     userMarker = L.marker([userLat, userLng], {
@@ -2176,20 +2077,19 @@ function useLastKnownLocation() {
 async function startApp() {
   buildProperties();
   buildFilterGrid();
-  buildLayersMenu();
   bindListHandlers();
   initMap();
   revealApp();
   applyFiltersAndRender();
   fitToProperties();
-  // Both map-layer toggles default to on (per user request) — Parcels is
-  // zoom-gated (see PARCELS_MIN_ZOOM) so this is a no-op/hint-only until
-  // the user zooms in from the initial statewide view; Survey Points
-  // needs surveyRecords populated first, so it's turned on after the
-  // fetch below rather than here.
-  if (showParcels) await showParcelsLayer();
+  // Both map layers are always on — no user-facing toggle for either.
+  // Parcels is zoom-gated (see PARCELS_MIN_ZOOM) so this is a no-op/
+  // hint-only until the user zooms in from the initial statewide view;
+  // Survey Points needs surveyRecords populated first, so it's rendered
+  // after the fetch below rather than here.
+  await showParcelsLayer();
   await fetchSurveyRecords();
-  if (showSurveyPoints) toggleSurveyPointsLayer(true);
+  renderSurveyPointsLayer();
   fetchSurveyLayerMeta();
   if (navigator.geolocation) navigator.geolocation.getCurrentPosition(onLocationSuccess, () => useLastKnownLocation(), { timeout: 5000 });
   else useLastKnownLocation();

@@ -10,6 +10,36 @@
      and matches the pattern used in the PREDS Summary / Districts apps. -->
 <meta http-equiv="Content-Security-Policy" content="frame-ancestors *">
 <script>
+  // Restore query-string params (e.g. ?mode=surveyonly) that were present
+  // before a full-page ArcGIS OAuth login redirect. A non-iframe sign-in
+  // (startOAuthFlow()) navigates this tab away to ArcGIS, which later
+  // returns it to the fixed CONFIG.redirectUri — a plain URL with no
+  // query string of its own, just ?code=...&state=... — so anything else
+  // that was on the URL gets lost unless we put it back. startOAuthFlow()
+  // saves window.location.search to sessionStorage right before leaving;
+  // if we're now landing back from that redirect (code/error present)
+  // and a saved search exists, merge it back into the URL bar via
+  // history.replaceState here, BEFORE the app's main script (further
+  // down the file — see the SURVEY_ONLY_MODE const) ever reads
+  // window.location.search. Runs before the ?layout=full block below so
+  // any restored params are visible to it too, though layout=full itself
+  // isn't affected by this bug (it's only ever used from inside an
+  // iframe, which uses the popup login flow, not this one).
+  (function() {
+    try {
+      const cur = new URLSearchParams(window.location.search);
+      const isOAuthReturn = cur.has('code') || cur.has('error');
+      const saved = sessionStorage.getItem('oauth_return_search');
+      if (isOAuthReturn && saved) {
+        const savedParams = new URLSearchParams(saved);
+        savedParams.forEach((v, k) => { if (!cur.has(k)) cur.set(k, v); });
+        const newSearch = cur.toString();
+        const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : '') + window.location.hash;
+        history.replaceState(history.state, '', newUrl);
+        sessionStorage.removeItem('oauth_return_search');
+      }
+    } catch (e) { console.warn('OAuth return-search restore failed:', e); }
+  })();
   // Apply embed layout immediately to avoid a flash of the wrong sizing.
   // Usage: append ?layout=full to the URL in the Experience Builder
   // embed widget so the app stretches to fill the iframe.
@@ -1050,6 +1080,15 @@ function startOAuthFlow() {
     });
     _waitForOAuthResult(popup);
   } else {
+    // Full-page redirect (not embedded in an iframe): this tab navigates
+    // away entirely and ArcGIS later returns it to the fixed
+    // CONFIG.redirectUri, which has no query string of its own — so any
+    // params on the current URL (e.g. ?mode=surveyonly) would otherwise
+    // be silently lost. Save them here; the early restore script at the
+    // top of <head> merges them back into window.location.search before
+    // the rest of this script (SURVEY_ONLY_MODE, etc.) reads it. See that
+    // script and handleOAuthCallback()'s _urlWithoutOAuthParams().
+    if (window.location.search) sessionStorage.setItem('oauth_return_search', window.location.search);
     const urlPromise = _preparedAuthUrl ? Promise.resolve(_preparedAuthUrl) : _buildAuthorizeUrl();
     urlPromise.then(url => { window.location.href = url; }).catch(err => {
       console.error('OAuth start failed:', err);
@@ -1153,6 +1192,18 @@ function setLoginError(msg) {
   if (!msg) { el.classList.remove('visible'); el.textContent = ''; return; }
   el.classList.add('visible'); el.textContent = msg;
 }
+// Strips only the OAuth round-trip params (code/state/error/
+// error_description) from a URL, keeping everything else — e.g. a
+// ?mode=surveyonly that the early restore script (top of <head>) merged
+// back in. Used by handleOAuthCallback() so the URL bar ends up clean
+// (no leftover ?code=...&state=...) but doesn't lose params the app
+// still cares about.
+function _urlWithoutOAuthParams(url) {
+  const p = new URLSearchParams(url.search);
+  ['code', 'state', 'error', 'error_description'].forEach(k => p.delete(k));
+  const qs = p.toString();
+  return url.pathname + (qs ? `?${qs}` : '');
+}
 async function handleOAuthCallback() {
   const url = new URL(window.location.href);
   const code  = url.searchParams.get('code');
@@ -1172,24 +1223,24 @@ async function handleOAuthCallback() {
   }
   if (error) {
     setLoginError(`Sign-in error: ${url.searchParams.get('error_description') || error}`);
-    history.replaceState({}, '', url.pathname);
+    history.replaceState({}, '', _urlWithoutOAuthParams(url));
     return false;
   }
   const expectedState = sessionStorage.getItem('oauth_state');
   if (expectedState && state !== expectedState) {
     setLoginError('Sign-in failed: state mismatch. Please try again.');
-    history.replaceState({}, '', url.pathname);
+    history.replaceState({}, '', _urlWithoutOAuthParams(url));
     return false;
   }
   try {
     const tok = await exchangeCodeForToken(code);
     saveToken(tok);
-    history.replaceState({}, '', url.pathname);
+    history.replaceState({}, '', _urlWithoutOAuthParams(url));
     return true;
   } catch (err) {
     console.error('Token exchange failed:', err);
     setLoginError(err.message || 'Sign-in failed.');
-    history.replaceState({}, '', url.pathname);
+    history.replaceState({}, '', _urlWithoutOAuthParams(url));
     return false;
   }
 }

@@ -1360,3 +1360,53 @@ override exists too (same trap `#app[hidden]` already has its own
 `!important` override for) — added that rule alongside it.
 
 Example: `https://temagis.github.io/HMA_Open_Space/?mode=surveyonly`
+
+## Fixed: signing in dropped `?mode=surveyonly` from the URL
+Reported 2026-09-15, same day as the parameter above: "when I login it
+redirects and removes the mode=surveyonly." Root cause was the OAuth
+sign-in flow itself. When the app isn't embedded in an iframe (the normal
+case for a `?mode=surveyonly` link opened directly, as opposed to an
+Experience Builder embed), clicking Sign In does a **full-page redirect**
+— `window.location.href` — to ArcGIS's authorize page, and ArcGIS later
+sends the browser back to a fixed, exact-match Redirect URI registered on
+the AGOL app item (`CONFIG.redirectUri`, no query string of its own,
+just `?code=...&state=...` tacked on). Landing back on that bare URL is
+what erased `mode=surveyonly` — the URL the app re-evaluates
+`SURVEY_ONLY_MODE` from on that fresh page load simply no longer had it.
+(The popup-based sign-in flow, used automatically when the app *is*
+embedded in an iframe, never touches the main tab's URL at all, so it was
+never affected — only the direct/full-page case was broken.)
+
+Fix mirrors the pattern the OAuth code already uses for its own PKCE
+verifier/state across this exact redirect round-trip (`sessionStorage`):
+- `startOAuthFlow()`'s full-page-redirect branch now saves
+  `window.location.search` to `sessionStorage['oauth_return_search']`
+  right before navigating away.
+- A new early inline script at the very top of `<head>` (same spot and
+  pattern as the existing `?layout=full` parser) runs before anything
+  else on the page: if the URL it lands on looks like an OAuth return
+  (`code` or `error` present) and a saved search exists, it merges the
+  saved params back into `window.location.search` via
+  `history.replaceState` — before the main script's `SURVEY_ONLY_MODE`
+  constant (or anything else that reads the URL) ever evaluates. This is
+  what makes it work even though `SURVEY_ONLY_MODE` is computed once at
+  script-parse time: the merge happens earlier still.
+- `handleOAuthCallback()`'s three `history.replaceState(...)` calls (on
+  success, on error, and on a state mismatch) now go through a new
+  `_urlWithoutOAuthParams()` helper that strips only `code`/`state`/
+  `error`/`error_description`, instead of wiping the whole query string
+  — so the URL bar ends up clean (no OAuth crumbs) but keeps
+  `?mode=surveyonly` (or anything else) visible and correct afterward,
+  including on a later page refresh.
+
+Verified with a new Playwright test (`test_oauth_redirect.js`) that stubs
+`fetch` to fake a successful token exchange and simulates the full
+round-trip three ways: (a) a saved `?mode=surveyonly` present before a
+full-page OAuth redirect restores correctly — `SURVEY_ONLY_MODE` is
+`true` and the URL ends up exactly `?mode=surveyonly` with no leftover
+`code`/`state`; (b) a plain login with nothing saved still lands on a
+clean, empty URL exactly as before; (c) loading `?mode=surveyonly`
+directly, with no login involved, is unaffected by the new restore
+script. Re-ran the full existing regression suite (`test_kingshill`,
+`test_woodsgreen`, `test_citymismatch`, `test_geoaddr`, `test_filtergrid`,
+`test_cardicons`, `test_labelwrap`, `test_surveyonly`) — no regressions.

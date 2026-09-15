@@ -334,6 +334,12 @@
   .loc-warn svg { flex-shrink: 0; margin-top: 1px; }
   .card-loc-warn { display: flex; align-items: flex-start; gap: 5px; margin-top: 6px; padding: 5px 8px; border-radius: 8px; background: #FCEEE3; color: #B54708; font-size: 11px; font-weight: 600; line-height: 1.3; }
   .card-loc-warn svg { flex-shrink: 0; margin-top: 1px; }
+  /* Added 2026-09-15 — the Survey Records list card's "vs. <acquisition
+     address>" comparison line for a 'partial' (blue) match, mirroring the
+     map popup's "Acquisition List" row (see matchedAcquisitionAddr()) so
+     the mismatch is visible without opening Details. Blue-tinted to match
+     SURVEY_PARTIAL_COLOR/the card's own strip color for that state. */
+  .card-addr-compare { margin-top: 6px; padding: 5px 8px; border-radius: 8px; background: #EFF6FF; color: #1D4ED8; font-size: 11px; font-weight: 600; line-height: 1.3; }
   .parcel-tpad-link { display: inline-block; margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--tema-blue); text-decoration: underline; }
   #boundary-hint {
     position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 690;
@@ -529,8 +535,8 @@
   <main id="list-section" aria-label="Acquired properties">
     <div class="list-controls">
       <div class="list-mode-toggle" role="tablist" aria-label="Choose which list to browse">
-        <button type="button" id="list-mode-properties" class="list-mode-btn active" role="tab" aria-selected="true" onclick="setListMode('properties')">TN Properties Acquired</button>
-        <button type="button" id="list-mode-surveys" class="list-mode-btn" role="tab" aria-selected="false" onclick="setListMode('surveys')">Survey Records</button>
+        <button type="button" id="list-mode-surveys" class="list-mode-btn active" role="tab" aria-selected="true" onclick="setListMode('surveys')">Survey Records</button>
+        <button type="button" id="list-mode-properties" class="list-mode-btn" role="tab" aria-selected="false" onclick="setListMode('properties')">TN Properties Acquired</button>
       </div>
       <div class="list-header">
         <div>
@@ -574,18 +580,12 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>
       Export Survey Report (.xlsx)
     </button>
-    <button id="validate-locations-btn" class="report-btn report-btn-secondary" type="button" onclick="generateLocationValidationReport()">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
-      Validate Acquisition Locations (.xlsx)
-    </button>
-    <div class="report-btn-note">Both scoped to the Region &amp; County filters above</div>
-    <!-- Shared by both export buttons — populated by presentDownloadLink()
-         as a REAL <a> the user clicks themselves — a hidden auto-clicked
-         link is exactly what an embedding iframe (e.g. Experience
-         Builder) tends to block, but a genuine user click on a visible
-         link is much more likely to get through. See
-         generateSurveyReport()/generateLocationValidationReport()/
-         presentDownloadLink(). -->
+    <div class="report-btn-note">Scoped to the Region &amp; County filters above</div>
+    <!-- Populated by presentDownloadLink() as a REAL <a> the user clicks
+         themselves — a hidden auto-clicked link is exactly what an
+         embedding iframe (e.g. Experience Builder) tends to block, but a
+         genuine user click on a visible link is much more likely to get
+         through. See generateSurveyReport()/presentDownloadLink(). -->
     <div id="report-download-ready" class="report-download-ready" hidden></div>
     <a id="open-newtab-link" href="#" target="_blank" rel="noopener" class="open-newtab-link">Downloads not working in this embed? Open the app in a new tab ↗</a>
   </div>
@@ -672,6 +672,17 @@ const CONFIG = {
   // would be too easy to false-positive on; requiring it to also be
   // right next to that specific acquired-list point is not.
   cityMismatchFeet: 500,
+  // A small edit-distance tolerance on top of the partial-match tier's
+  // core-street-name comparison (2026-09-15, real reported case: "529
+  // KINGS HILL BLVD" acquisition vs. "529 Kings Hills Blvd" survey — same
+  // house number, same city, same suffix, differ by one letter, a plain
+  // singular/plural street-name variant). Kept small on purpose — this
+  // only ever runs against a candidate that already passed the same
+  // house-number + city + within-partialMatchFeet gate every other check
+  // in this tier uses, so the search space is already just "a survey
+  // point right at this one address"; it isn't a general fuzzy-address
+  // search. See coresMatch()/streetCore().
+  coreFuzzyMaxEdits: 2,
   // Once a property is matched to a survey record (by address and/or
   // proximity — see correlateAll()), if the survey record's own point is
   // further than this from the acquired-list's point, the acquired-list
@@ -878,6 +889,45 @@ function streetCore(streetAddr) {
   if (rest.length > 1 && STREET_TYPE_SUFFIXES.has(rest[rest.length - 1])) rest = rest.slice(0, -1);
   const core = rest.join(' ');
   return { houseNum, core, coreCompact: core.replace(/\s+/g, '') };
+}
+// Standard Levenshtein (single-character insert/delete/substitute) edit
+// distance between two short strings — used only by coresMatch() below,
+// on already-short core-street-name strings, so the O(len(a)*len(b)) cost
+// is negligible.
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = new Array(n + 1), curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+// Are two (already suffix-stripped, space-compacted) core street names
+// close enough to call the same street? Added 2026-09-15 alongside
+// CONFIG.coreFuzzyMaxEdits — real reported case: "KINGSHILL" vs.
+// "KINGSHILLS" (edit distance 1, a plain singular/plural variant) neither
+// of which the exact coreCompact equality check above it could ever catch.
+// Exact-equal short-circuits first (the common case); the fuzzy fallback
+// requires a minimum length so a very short/generic core can't match too
+// loosely on a coincidence. Every caller of this already also requires
+// the same house number, city, and within-CONFIG.partialMatchFeet
+// distance, so this is never run as a general "sounds similar" search —
+// only against a candidate already narrowed down to "right at this one
+// address."
+function coresMatch(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (Math.min(a.length, b.length) < 4) return false;
+  return levenshtein(a, b) <= CONFIG.coreFuzzyMaxEdits;
 }
 function haversineFeet(lat1, lon1, lat2, lon2) {
   const R = 20925524.9; // Earth radius in feet
@@ -1164,10 +1214,13 @@ let searchTerm = '', selectedId = null;
 let boundaryLayerGroup = null, surveyPointsLayerGroup = null, matchHighlightLayer = null;
 let boundaryMoveHandler = null, boundaryFetchToken = 0;
 let renderedList = [];
-// Added 2026-09-14 — the list/toggle feature: 'properties' (default, the
-// acquisition list unchanged) or 'surveys' (browse survey submissions
+// Added 2026-09-14 — the list/toggle feature: 'properties' (the
+// acquisition list, unchanged) or 'surveys' (browse survey submissions
 // directly). See setListMode()/applyFiltersAndRender()/renderList().
-let listMode = 'properties';
+// Default flipped to 'surveys' 2026-09-15 per user request — also swapped
+// to the LEFT button in the toggle (see the list-mode-toggle HTML) so the
+// default and the visual first-position agree.
+let listMode = 'surveys';
 let renderedSurveyList = [];
 let selectedSurveyObjectId = null;
 let surveyMarkers = {};             // survey point Leaflet markers, keyed by objectId — populated in
@@ -1321,6 +1374,17 @@ function correlateAll() {
     r.partialMatched = false;
     r.proximityMatched = false;
     r.cityMismatchMatched = false;
+    // The acquisition-list { address, city } text this record was found
+    // near for each looser tier (2026-09-15, so the map popup/list can
+    // show "matched against: <that address>" for direct comparison — see
+    // buildSurveyPointPopupHtml()) — set alongside the matching boolean
+    // flag above, and independent of whether that candidate ends up as
+    // the property's officially claimed match (properties.surveyObjectId)
+    // or is just a flagged correlation. Reset every run for the same
+    // reason the booleans are.
+    r.partialCandidateAddr = null;
+    r.proximityCandidateAddr = null;
+    r.cityMismatchCandidateAddr = null;
   });
   properties.forEach(prop => {
     const key = correlationKey(prop.address, prop.city);
@@ -1344,20 +1408,23 @@ function correlateAll() {
     // an acquired-list point whose address text doesn't normalize to an
     // identical string (most often a missing/typo'd street-type suffix —
     // e.g. acquired-list "7505 ANTIETAM" vs. the survey's "7505 Antietam
-    // Ln" — or a compound street name split differently, e.g. acquired-
-    // list "1211 WOODSGREEN DR" vs. the survey's "1211 Woods Green Rd":
-    // same core once suffix AND internal spacing are both ignored, see
-    // streetCore()'s coreCompact) but is clearly the same property — same
-    // house number, same core street name, and within
-    // CONFIG.partialMatchFeet. Tracks the NEAREST such candidate,
-    // same pattern as the plain-proximity nearest search just below.
+    // Ln"; a compound street name split differently, e.g. acquired-list
+    // "1211 WOODSGREEN DR" vs. the survey's "1211 Woods Green Rd" — same
+    // core once suffix AND internal spacing are both ignored, see
+    // streetCore()'s coreCompact; or a singular/plural variant, e.g. "529
+    // KINGS HILL BLVD" vs. "529 Kings Hills Blvd" — allowed a small edit-
+    // distance tolerance, see coresMatch()) but is clearly the same
+    // property — same house number, same (or fuzzy-close) core street
+    // name, and within CONFIG.partialMatchFeet. Tracks the NEAREST such
+    // candidate, same pattern as the plain-proximity nearest search just
+    // below.
     let partial = null, partialFt = Infinity;
     for (const r of geoRecords) {
       const d = haversineFeet(prop.lat, prop.lng, r.lat, r.lng);
       if (d < nearestFt) { nearestFt = d; nearest = r; }
       if (d <= CONFIG.partialMatchFeet && d < partialFt &&
           propCore.houseNum && propCore.coreCompact &&
-          r._core.houseNum === propCore.houseNum && r._core.coreCompact === propCore.coreCompact &&
+          r._core.houseNum === propCore.houseNum && coresMatch(r._core.coreCompact, propCore.coreCompact) &&
           normCity(r.city) === propCityNorm) {
         partial = r; partialFt = d;
       }
@@ -1377,13 +1444,13 @@ function correlateAll() {
     // an outright bug to a field user comparing the two layers side by
     // side, even though the underlying r.addressMatched (exact-text-only)
     // signal was working as designed. See surveyMatchState().
-    if (proxHit) nearest.proximityMatched = true;
-    if (partial) partial.partialMatched = true;
+    if (proxHit) { nearest.proximityMatched = true; nearest.proximityCandidateAddr = { address: prop.address, city: prop.city }; }
+    if (partial) { partial.partialMatched = true; partial.partialCandidateAddr = { address: prop.address, city: prop.city }; }
     // Flagged whenever found, same as proximityMatched/partialMatched above
     // — regardless of whether it ends up "used" below — so the Survey
     // Points map layer/list reflect this correlation even on a property
     // that also had a full address+city hit.
-    if (cityMismatch) cityMismatch.cityMismatchMatched = true;
+    if (cityMismatch) { cityMismatch.cityMismatchMatched = true; cityMismatch.cityMismatchCandidateAddr = { address: prop.address, city: prop.city }; }
     const methods = [];
     let matched = null;
     if (addrHits.length) { methods.push('address'); matched = addrHits[0]; }
@@ -1527,6 +1594,13 @@ const STATUS_ICONS = {
   all: `<svg viewBox="0 0 26 26" width="22" height="22" aria-hidden="true"><circle cx="13" cy="13" r="12" fill="#002868"/><circle cx="13" cy="13" r="6" fill="#fff"/></svg>`,
   surveyed: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${STATUS_COLORS.surveyed}"/><path d="M7 12.5l3 3 7-7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   unsurveyed: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${STATUS_COLORS.unsurveyed}"/><path d="M12 7v6" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="16.3" r="1.4" fill="#fff"/></svg>`,
+  // Added 2026-09-15 — the "TN Properties Acquired" filter's new "Partial
+  // Match" option (see buildFilterGrid()/getFiltered()). Same blue check
+  // as SURVEY_MATCH_ICONS.partial (defined just below) — this exists
+  // before that object does, so it's spelled out directly rather than
+  // referencing it forward; SURVEY_MATCH_ICONS.partial could reference
+  // this one instead, but is left as-is to avoid touching working code.
+  partial: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${SURVEY_PARTIAL_COLOR}"/><path d="M7 12.5l3 3 7-7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
 // Icons for the separate "Survey Points" map-layer filter — deliberately
 // reusing the same yellow/black-X glyph as surveyPointIcon() so the
@@ -1537,29 +1611,61 @@ const SURVEY_MATCH_ICONS = {
   unmatched: `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="${SURVEY_NOMATCH_COLOR}"/><path d="M8 8l8 8M16 8l-8 8" stroke="#000" stroke-width="2.4" stroke-linecap="round"/></svg>`,
 };
 function buildFilterGrid() {
+  // Fixed 2026-09-15, per user request ("can all of the filters show the
+  // counts"): every row below now shows a live count per option, each
+  // scoped by the OTHER active filters (never by itself) so the number
+  // always answers "how many would this choice leave on screen" — same
+  // idea as the Survey Points row's surveyMatchCounts further down.
+  const statusScope = properties.filter(p =>
+    (activeRegion === 'all' || p.region === activeRegion) &&
+    (activeCounty === 'all' || p.county === activeCounty)
+  );
+  const statusCounts = {
+    all: statusScope.length,
+    surveyed: statusScope.filter(p => p.surveyed).length,
+    unsurveyed: statusScope.filter(p => !p.surveyed).length,
+    // "Partial Match" — added per user request ("should acquired also show
+    // partial matches"): a SUBSET of Surveyed whose match wasn't a full
+    // clean 'address'-tier hit (it also or only involved proximity,
+    // city-mismatch, or the fuzzy partial-street tier). Not a strict
+    // partition of Surveyed, same as the Survey Points row's own
+    // All/Partial/No-Match buttons aren't a strict partition either.
+    partial: statusScope.filter(p => propertyMatchesStatus(p, 'partial')).length,
+  };
   const statusOpts = [
     { key: 'all', label: 'All' },
     { key: 'surveyed', label: 'Surveyed' },
     { key: 'unsurveyed', label: 'Not Surveyed' },
+    { key: 'partial', label: 'Partial Match' },
   ];
   const statusBtns = statusOpts.map(o => `
     <button class="fgt ${activeStatus === o.key ? 'active' : ''}" data-status="${o.key}" aria-pressed="${activeStatus === o.key ? 'true' : 'false'}" onclick="setStatusFilter('${o.key}')">
       <div class="fgt-icon" aria-hidden="true">${STATUS_ICONS[o.key]}</div>
-      <div class="fgt-label">${o.label}</div>
+      <div class="fgt-label">${o.label}<span class="fgt-count">${statusCounts[o.key]}</span></div>
     </button>`).join('');
+  const regionScope = properties.filter(p =>
+    (activeCounty === 'all' || p.county === activeCounty) && propertyMatchesStatus(p, activeStatus)
+  );
+  const regionCounts = { all: regionScope.length };
+  Object.keys(REGIONS).forEach(key => { regionCounts[key] = regionScope.filter(p => p.region === key).length; });
   const regionOpts = [{ key: 'all', label: 'All', color: null }, ...Object.entries(REGIONS).map(([key, r]) => ({ key, label: r.label, color: r.color }))];
   const regionBtns = regionOpts.map(o => `
     <button class="fgt ${activeRegion === o.key ? 'active' : ''}" data-region="${o.key}" aria-pressed="${activeRegion === o.key ? 'true' : 'false'}" onclick="setRegionFilter('${o.key}')" aria-label="Filter: ${o.label} region">
       <div class="fgt-icon" aria-hidden="true">${o.color ? `<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="10" fill="${o.color}"/></svg>` : STATUS_ICONS.all}</div>
-      <div class="fgt-label">${o.label}</div>
+      <div class="fgt-label">${o.label}<span class="fgt-count">${regionCounts[o.key]}</span></div>
     </button>`).join('');
   // County list is scoped to the active Region filter — picking a region
   // narrows the county dropdown down to just the counties that actually
   // occur in that region, instead of always listing all 42 statewide.
+  // Also now scoped by the active Status filter (for its counts, below),
+  // consistent with the Region row above.
   const countySource = activeRegion === 'all' ? properties : properties.filter(p => p.region === activeRegion);
   const counties = [...new Set(countySource.map(p => p.county).filter(Boolean))].sort();
-  const countyOpts = [`<option value="all" ${activeCounty === 'all' ? 'selected' : ''}>All Counties</option>`, ...counties.map(c =>
-    `<option value="${escapeHtml(c)}" ${activeCounty === c ? 'selected' : ''}>${escapeHtml(c)}</option>`)].join('');
+  const countyScope = countySource.filter(p => propertyMatchesStatus(p, activeStatus));
+  const countyCounts = {};
+  counties.forEach(c => { countyCounts[c] = countyScope.filter(p => p.county === c).length; });
+  const countyOpts = [`<option value="all" ${activeCounty === 'all' ? 'selected' : ''}>All Counties (${countyScope.length})</option>`, ...counties.map(c =>
+    `<option value="${escapeHtml(c)}" ${activeCounty === c ? 'selected' : ''}>${escapeHtml(c)} (${countyCounts[c]})</option>`)].join('');
   // Counts respect the same Region/County scope and valid-geometry check
   // renderSurveyPointsLayer() itself applies (everything except the match
   // filter, since that's the very thing being counted per-option) — so
@@ -1663,7 +1769,7 @@ function updateActiveFilterBar() {
   const bar = document.getElementById('active-filters');
   const btn = document.getElementById('filter-toggle-btn');
   const chips = [];
-  if (activeStatus !== 'all') chips.push({ kind: 'status', label: activeStatus === 'surveyed' ? 'Surveyed' : 'Not Surveyed' });
+  if (activeStatus !== 'all') chips.push({ kind: 'status', label: activeStatus === 'surveyed' ? 'Surveyed' : activeStatus === 'partial' ? 'Partial Match' : 'Not Surveyed' });
   if (activeRegion !== 'all') chips.push({ kind: 'region', label: REGIONS[activeRegion].label });
   if (activeCounty !== 'all') chips.push({ kind: 'county', label: activeCounty });
   if (activeSurveyMatch !== 'all') chips.push({ kind: 'surveymatch', label: activeSurveyMatch === 'partial' ? 'Survey pts: partial match' : 'Survey pts: no match' });
@@ -1687,8 +1793,7 @@ function updateActiveFilterBar() {
 function onSearch() { searchTerm = document.getElementById('search-input').value.toLowerCase(); applyFiltersAndRender(); }
 function getFiltered() {
   let list = properties.filter(p => {
-    if (activeStatus === 'surveyed' && !p.surveyed) return false;
-    if (activeStatus === 'unsurveyed' && p.surveyed) return false;
+    if (!propertyMatchesStatus(p, activeStatus)) return false;
     if (activeRegion !== 'all' && p.region !== activeRegion) return false;
     if (activeCounty !== 'all' && p.county !== activeCounty) return false;
     if (searchTerm) {
@@ -1847,6 +1952,13 @@ function renderSurveyCard(r) {
     compliance ? `<span class="meta-badge" style="background:${compliance.color}18;border-color:${compliance.color}55;color:${compliance.color}">${escapeHtml(compliance.label)}</span>` : '',
     !isBlank(inspector) ? `<span class="meta-badge">🧑 ${escapeHtml(inspector)}</span>` : '',
   ].filter(Boolean).join('');
+  // Same "show the corresponding address names used to match" comparison
+  // as the map popup (matchedAcquisitionAddr()) — only for 'partial',
+  // same reasoning as buildSurveyPointPopupHtml().
+  const candidateAddr = state === 'partial' ? matchedAcquisitionAddr(r) : null;
+  const compareRow = candidateAddr
+    ? `<div class="card-addr-compare">vs. ${escapeHtml(candidateAddr.address)}, ${escapeHtml(candidateAddr.city)}</div>`
+    : '';
   const sid = 's' + r.objectId;
   return `<article class="asset-card ${String(selectedSurveyObjectId) === String(r.objectId) ? 'selected' : ''}" id="card-${sid}"
     data-survey-id="${sid}" role="listitem" tabindex="0"
@@ -1867,6 +1979,7 @@ function renderSurveyCard(r) {
           </div>
         </div>
         ${badges ? `<div class="meta-badges">${badges}</div>` : ''}
+        ${compareRow}
       </div>
     </div>
     <div class="card-footer">
@@ -2091,12 +2204,24 @@ function buildPopupHtml(p) {
   const color = p.surveyed ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed;
   const label = p.surveyed ? 'Surveyed' : 'Not Surveyed';
   const compliance = p.surveyed ? complianceInfo(p.surveyRecord && p.surveyRecord[SURVEY_FIELDS.complianceStatus]) : null;
+  // Reciprocal of the Survey Record popup's "Acquisition List" comparison
+  // row (2026-09-15, same "show the corresponding address names used to
+  // match" request) — shown whenever this property matched by anything
+  // OTHER than a clean full address+city hit (proximity, city-mismatch,
+  // or partial all mean the two address texts don't read identically),
+  // so a field user can see what the survey submission actually said
+  // without leaving this popup to go find the survey point separately.
+  const showSurveyAddr = p.surveyed && p.surveyRecord && !(p.matchMethods.length === 1 && p.matchMethods[0] === 'address');
+  const surveyAddrRow = showSurveyAddr
+    ? popRow('Survey Record', `${p.surveyRecord[SURVEY_FIELDS.address] || ''}${p.surveyRecord[SURVEY_FIELDS.city] ? ', ' + p.surveyRecord[SURVEY_FIELDS.city] : ''}`)
+    : '';
   return `<div class="pop">
       <div class="pop-type" style="color:${ACQUISITION_KIND_COLOR}">Acquisition List Location</div>
       <div class="pop-name">${escapeHtml(p.address)}</div>
       <div class="pop-cityzip">${escapeHtml(p.city)}${p.region ? ' · ' + escapeHtml(p.region) : ''}</div>
       <span class="status-pop-badge" style="background:${color}18;color:${color}">${escapeHtml(label)}</span>
       ${compliance ? `<span class="status-pop-badge" style="background:${compliance.color}18;color:${compliance.color}">${escapeHtml(compliance.label)}</span>` : ''}
+      ${surveyAddrRow ? `<div class="kv-pop-list">${surveyAddrRow}</div>` : ''}
       ${p.locationSuspect ? `<div class="loc-warn">${WARN_TRIANGLE_SVG}<span>${escapeHtml(locationWarningText(p))}</span></div>` : ''}
     </div>`;
 }
@@ -2253,11 +2378,12 @@ function selectSurveyRecord(r) {
 //  AGOL org). The map-click popup (buildParcelPopupHtml, below) shows a
 //  curated set — address, city, calculated acreage, a TPAD link — found
 //  by matching a short list of likely real field names rather than one
-//  hardcoded guess (see PARCEL_FIELD_CANDIDATES). The detail sheet's
-//  Parcel Info section (loadParcelInfoInto) still renders every populated
-//  attribute generically (see humanizeFieldName()), since that one wasn't
-//  asked to be curated. Statewide parcel data is far too large to ever
-//  fetch in full, so — like the Districts app's Census Tracts layer —
+//  hardcoded guess (see PARCEL_FIELD_CANDIDATES). (The detail sheet used
+//  to have its own separate "Parcel Info" section/point-lookup — removed
+//  2026-09-15 per user request, not needed there; this map popup is the
+//  only place parcel data shows up now.) Statewide parcel data is far too
+//  large to ever fetch in full, so — like the Districts app's Census
+//  Tracts layer —
 //  this always queries just the current map viewport, refetching
 //  (debounced) on every pan/zoom, and is gated behind a minZoom so
 //  panning out doesn't fire a huge, pointless statewide query.
@@ -2487,10 +2613,38 @@ function popRow(label, val) {
   if (isBlank(val)) return '';
   return `<div class="kv-pop-row"><span class="kv-pop-k">${escapeHtml(label)}</span><span class="kv-pop-v">${escapeHtml(val)}</span></div>`;
 }
+// The acquisition-list { address, city } this survey record correlates
+// to, for direct side-by-side comparison in the popup/list/detail views
+// (2026-09-15 — "can this show the corresponding address names used to
+// match"). Prefers the property that's actually claimed this record as
+// its official match (properties.surveyObjectId — the most authoritative
+// answer); falls back to whichever looser-tier candidate address
+// correlateAll() stashed on the record (cityMismatch > proximity >
+// partial, roughly its own tier-confidence order) for a record that was
+// flagged as a correlation but didn't end up "winning" as any one
+// property's official match (see the "flag BOTH candidates" comment in
+// correlateAll()) — still useful to show, since it's still the reason
+// this record isn't a plain "no match."
+function matchedAcquisitionAddr(r) {
+  const linked = properties.find(p => p.surveyObjectId === r.objectId);
+  if (linked) return { address: linked.address, city: linked.city };
+  return r.cityMismatchCandidateAddr || r.proximityCandidateAddr || r.partialCandidateAddr || null;
+}
 function buildSurveyPointPopupHtml(r) {
   const a = r.attrs;
   const compliance = complianceInfo(a[SURVEY_FIELDS.complianceStatus]);
+  const state = surveyMatchState(r);
+  // Shown only for 'partial' (blue) — this is the whole point of that
+  // state: the address text DIDN'T line up exactly, so showing the actual
+  // acquisition-list text side by side with this record's own address
+  // (in .pop-name above) lets a field user see exactly what differed,
+  // rather than just being told "partial match" and having to go hunt
+  // for the acquisition marker separately. Not shown for 'matched'
+  // (identical text already, nothing to compare) or 'none' (nothing
+  // found at all).
+  const candidateAddr = state === 'partial' ? matchedAcquisitionAddr(r) : null;
   const rows = [
+    candidateAddr ? popRow('Acquisition List', `${candidateAddr.address}, ${candidateAddr.city}`) : '',
     popRow('Inspected', fmtDateOnly(a[SURVEY_FIELDS.inspectionDate])),
     popRow('Inspector', a[SURVEY_FIELDS.inspectorName]),
     // City added 2026-09-15 — a real reported case ("412 Brook View
@@ -2501,7 +2655,6 @@ function buildSurveyPointPopupHtml(r) {
     popRow('City', a[SURVEY_FIELDS.city]),
     popRow('Region', a[SURVEY_FIELDS.region]),
   ].join('');
-  const state = surveyMatchState(r);
   const matchColor = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
   // A record that's 'partial' purely because of the city-mismatch tier
   // gets its own, more specific label — otherwise this reads as the same
@@ -2719,154 +2872,6 @@ function generateSurveyReport() {
   }
 }
 // ════════════════════════════════════════════════════════════════
-//  ACQUISITION LOCATION VALIDATION EXPORT — "Validate Acquisition
-//  Locations" button, next to "Export Survey Report" in the filter
-//  drawer. Runs a purely geometric sanity check on every acquired
-//  property's own lat/lng — independent of survey matching, so it also
-//  catches bad rows on NOT-YET-surveyed properties (the location-suspect
-//  warning elsewhere in the app can only fire once something is
-//  address-matched to a survey record; a bad coordinate on an unsurveyed
-//  property is otherwise invisible until someone happens to notice it on
-//  the map, which is exactly how the 2026-09-14 batch of 8 corrections
-//  got found — see hma-open-space-notes.md).
-// ════════════════════════════════════════════════════════════════
-// Tennessee's approximate bounding box, with a little slack — only used
-// to flag points nowhere near the state, not as a precise boundary check.
-const TN_BBOX = { minLat: 34.9, maxLat: 36.75, minLng: -90.4, maxLng: -81.5 };
-function inTnBbox(lat, lng) {
-  return lat >= TN_BBOX.minLat && lat <= TN_BBOX.maxLat && lng >= TN_BBOX.minLng && lng <= TN_BBOX.maxLng;
-}
-// Per-property geometric checks — coordinate-sharing/duplicate-address
-// checks are handled separately in buildLocationValidationData() since
-// they need to compare across the whole in-scope list, not just one row.
-function validateAcquisitionLocation(p) {
-  const issues = [];
-  const lat = p.lat, lng = p.lng;
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) { issues.push('Missing/non-numeric coordinates'); return issues; }
-  if (lat === 0 && lng === 0) { issues.push('Coordinates are 0,0 (Null Island)'); return issues; }
-  if (Math.abs(lat) > 90) issues.push('Latitude out of valid range (>90)');
-  if (Math.abs(lng) > 180) issues.push('Longitude out of valid range (>180)');
-  if (lng > 0) issues.push('Positive longitude (should be negative for the US)');
-  if (Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !inTnBbox(lat, lng)) {
-    issues.push("Outside Tennessee's bounding box");
-    // A cheap, surprisingly common real-world mistake — see i:826 (Cookeville,
-    // ended up at the North Pole) in the 2026-09-14 correction log.
-    if (inTnBbox(lng, lat)) issues.push('Latitude/longitude may be swapped');
-  }
-  return issues;
-}
-function buildLocationValidationData() {
-  const regionLabel = activeRegion === 'all' ? 'All Regions' : REGIONS[activeRegion].label;
-  const countyLabel = activeCounty === 'all' ? 'All Counties' : activeCounty;
-  const inScope = properties.filter(p => {
-    if (activeRegion !== 'all' && p.region !== activeRegion) return false;
-    if (activeCounty !== 'all' && p.county !== activeCounty) return false;
-    return true;
-  });
-
-  // Coordinate-key -> properties sharing the exact same lat/lng — two
-  // DIFFERENT addresses at the exact same point usually means a copy-paste
-  // error in the source list, not a real coincidence.
-  const coordIndex = new Map();
-  inScope.forEach(p => {
-    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lng)) return;
-    const key = `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`;
-    if (!coordIndex.has(key)) coordIndex.set(key, []);
-    coordIndex.get(key).push(p);
-  });
-  // Address-key -> properties sharing the same normalized address+city —
-  // catches a duplicate LIST ENTRY (like the 251 Midway Dr case), independent
-  // of whether its coordinates happen to also be bad.
-  const addrIndex = new Map();
-  inScope.forEach(p => {
-    const key = correlationKey(p.address, p.city);
-    if (!key || key === '@') return;
-    if (!addrIndex.has(key)) addrIndex.set(key, []);
-    addrIndex.get(key).push(p);
-  });
-
-  const rows = inScope.map(p => {
-    const issues = validateAcquisitionLocation(p);
-    if (Number.isFinite(p.lat) && Number.isFinite(p.lng)) {
-      const coordGroup = coordIndex.get(`${p.lat.toFixed(6)},${p.lng.toFixed(6)}`);
-      if (coordGroup && coordGroup.length > 1) {
-        issues.push(`Same coordinates as ${coordGroup.length - 1} other ${coordGroup.length - 1 === 1 ? 'property' : 'properties'}`);
-      }
-    }
-    const addrKey = correlationKey(p.address, p.city);
-    const addrGroup = (addrKey && addrKey !== '@') ? addrIndex.get(addrKey) : null;
-    if (addrGroup && addrGroup.length > 1) issues.push(`Duplicate address entry (appears ${addrGroup.length}x in the list)`);
-    return {
-      address: p.address, city: p.city, county: p.county || '', region: p.region,
-      lat: p.lat, lng: p.lng, surveyed: p.surveyed ? 'Yes' : 'No', issues,
-    };
-  }).filter(r => r.issues.length > 0);
-  rows.sort((a, b) => (a.address || '').localeCompare(b.address || ''));
-
-  return { regionLabel, countyLabel, totalInScope: inScope.length, rows };
-}
-const LOCATION_VALIDATION_HEADER = ['Address', 'City', 'Region', 'County', 'Latitude', 'Longitude', 'Surveyed', 'Issues Flagged'];
-function locationValidationRow(r) {
-  return [r.address, r.city, r.region, r.county, r.lat, r.lng, r.surveyed, r.issues.join('; ')];
-}
-function exportLocationValidationXlsx(data) {
-  const wb = XLSX.utils.book_new();
-  const summaryWs = XLSX.utils.aoa_to_sheet([
-    ['HMA Open Space — Acquisition Location Validation'],
-    ['Generated', new Date().toLocaleString()],
-    ['Region filter', data.regionLabel],
-    ['County filter', data.countyLabel],
-    [],
-    ['Total acquisition properties in scope', data.totalInScope],
-    ['Flagged for review', data.rows.length],
-    [],
-    ['This is a purely geometric sanity check on each property\'s own lat/lng —'],
-    ['out-of-state points, 0/0, likely lat/lng swaps, positive longitude, and'],
-    ['duplicate coordinates or duplicate address entries. It does not depend on'],
-    ['a survey match, so it also catches bad rows on not-yet-surveyed properties.'],
-  ]);
-  summaryWs['!cols'] = [{ wch: 78 }, { wch: 24 }];
-  XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
-
-  const detailWs = XLSX.utils.aoa_to_sheet([LOCATION_VALIDATION_HEADER, ...data.rows.map(locationValidationRow)]);
-  detailWs['!cols'] = [26, 16, 10, 16, 12, 12, 10, 40].map(wch => ({ wch }));
-  XLSX.utils.book_append_sheet(wb, detailWs, 'Flagged Locations');
-
-  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  presentDownloadLink(blob, `HMA_Acquisition_Location_Validation_${reportFilenameSuffix()}.xlsx`);
-}
-function exportLocationValidationCsv(data, note) {
-  const lines = [LOCATION_VALIDATION_HEADER, ...data.rows.map(locationValidationRow)]
-    .map(row => row.map(csvEscape).join(','));
-  const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-  presentDownloadLink(blob, `HMA_Acquisition_Location_Validation_${reportFilenameSuffix()}.csv`, note);
-}
-function generateLocationValidationReport() {
-  const btn = document.getElementById('validate-locations-btn');
-  const originalHtml = btn ? btn.innerHTML : '';
-  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
-  try {
-    const data = buildLocationValidationData();
-    if (!data.rows.length) {
-      alert(`No location issues found among the ${data.totalInScope} propert${data.totalInScope === 1 ? 'y' : 'ies'} in the current Region/County scope.`);
-      return;
-    }
-    if (typeof XLSX !== 'undefined') {
-      exportLocationValidationXlsx(data);
-    } else {
-      console.warn('XLSX library unavailable (CDN unreachable?) — falling back to CSV export.');
-      exportLocationValidationCsv(data, 'Could not load the Excel export library (no internet connection?) — this is a CSV file instead, which opens fine in Excel.');
-    }
-  } catch (err) {
-    console.error('Location validation failed:', err);
-    alert('Something went wrong running the location check — check the browser console for details.');
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
-  }
-}
-
-// ════════════════════════════════════════════════════════════════
 //  ATTACHMENTS — same shared-cache pattern as the PDA/Districts apps,
 //  scoped to the SURVEY layer's OBJECTID (only relevant once a property
 //  has a matched survey record).
@@ -2947,48 +2952,11 @@ async function loadAttachmentsInto(p) {
   });
 }
 // ════════════════════════════════════════════════════════════════
-//  PARCEL LOOKUP — point-intersection query against the parcels layer
-//  for whichever property's detail sheet is open, independent of
-//  whether the Parcels boundary layer is toggled on the map. Cached
-//  per acquired-property id.
-// ════════════════════════════════════════════════════════════════
-const parcelPointCache = new Map();
-async function queryParcelAtPoint(lat, lng) {
-  await ensureFreshToken();
-  const params = new URLSearchParams({
-    geometry: `${lng},${lat}`, geometryType: 'esriGeometryPoint', inSR: '4326',
-    spatialRel: 'esriSpatialRelIntersects', outFields: '*', returnGeometry: 'false',
-    resultRecordCount: '1', f: 'json', token: TOKEN.accessToken,
-  });
-  const data = await arcgisFetch(`${CONFIG.parcelsServiceUrl}/query?${params}`);
-  const feat = (data.features || [])[0];
-  return feat ? feat.attributes : null;
-}
-function getParcelInfoCached(p) {
-  const cached = parcelPointCache.get(p.id);
-  if (cached) return cached;
-  const promise = queryParcelAtPoint(p.lat, p.lng).catch(err => { parcelPointCache.delete(p.id); throw err; });
-  parcelPointCache.set(p.id, promise);
-  return promise;
-}
-async function loadParcelInfoInto(p) {
-  const box = document.getElementById('parcel-body');
-  if (!box) return;
-  try {
-    const attrs = await getParcelInfoCached(p);
-    if (!attrs) { box.innerHTML = '<div style="color:var(--text3)">No parcel found at this location.</div>'; return; }
-    const rows = Object.entries(attrs)
-      .filter(([k, v]) => !isBlank(v) && !/^(shape__|objectid$|globalid$)/i.test(k))
-      .slice(0, 30)
-      .map(([k, v]) => kvRow(humanizeFieldName(k), v)).join('');
-    box.innerHTML = rows ? `<div class="kv-grid">${rows}</div>` : '<div style="color:var(--text3)">No attribute data returned for this parcel.</div>';
-  } catch (err) {
-    console.warn('[Parcels] point lookup failed:', err);
-    box.innerHTML = '<div style="color:var(--text3)">Could not look this up right now — check your connection.</div>';
-  }
-}
-// ════════════════════════════════════════════════════════════════
 //  DETAIL SHEET
+//  (Used to also have a "Parcel Info" point-intersection lookup against
+//  the parcels layer here — removed 2026-09-15 per user request. Parcel
+//  attributes are still available by clicking a parcel directly on the
+//  map — see buildParcelPopupHtml() under PARCELS BOUNDARY LAYER above.)
 // ════════════════════════════════════════════════════════════════
 function buildSurveyDetailRows(attrs) {
   if (!attrs) return '';
@@ -3022,6 +2990,27 @@ function buildSurveyDetailRows(attrs) {
     kvRow('Other Observations', attrs[SURVEY_FIELDS.otherObservations]),
     kvRow('Confirmation Note', attrs[SURVEY_FIELDS.confirmNote]),
   ].join('');
+}
+// Does this acquisition property's match come from the full, clean
+// address+city tier alone — the highest-confidence signal — or does it
+// also (or only) involve a looser tier (proximity, city-mismatch, or
+// partial)? Added 2026-09-15 for the "Partial Match" option in the TN
+// Properties Acquired filter (see getFiltered()/buildFilterGrid()) and
+// reused by the "Survey Record" address-comparison row in the acquisition
+// popup (buildPopupHtml()).
+function isCleanAddressMatch(p) {
+  return p.matchMethods.length === 1 && p.matchMethods[0] === 'address';
+}
+// Single source of truth for what each "TN Properties Acquired" status
+// option means — shared by getFiltered() (the actual filter) and
+// buildFilterGrid() (the per-option counts), added 2026-09-15 alongside the
+// new "Partial Match" option so the two can never drift apart the way the
+// Survey Points row's count/filter logic briefly did.
+function propertyMatchesStatus(p, status) {
+  if (status === 'surveyed') return p.surveyed;
+  if (status === 'unsurveyed') return !p.surveyed;
+  if (status === 'partial') return p.surveyed && !isCleanAddressMatch(p);
+  return true; // 'all'
 }
 // Describes HOW a property was matched to a survey record — deliberately
 // says nothing about distance. Distance is a separate measurement (the gap
@@ -3119,11 +3108,6 @@ async function openDetail(id) {
     ${kvSection('Survey Status', statusRows)}
     ${p.surveyed ? kvSection('Survey Results', surveyDetailRows) : `<div class="sdiv"></div><div class="sec"><div class="sec-label">Survey Results</div><div style="font-size:13px;color:var(--text3)">No matching survey record found yet for this property.</div></div>`}
     <div class="sdiv"></div>
-    <div class="sec" id="parcel-sec">
-      <div class="sec-label">Parcel Info</div>
-      <div id="parcel-body" style="font-size:13px;color:var(--text3)">Loading…</div>
-    </div>
-    <div class="sdiv"></div>
     <div class="sec" id="attachments-sec">
       <div class="sec-label">Survey Photos</div>
       <div id="attachments-body" style="font-size:13px;color:var(--text3)">Loading…</div>
@@ -3149,16 +3133,14 @@ async function openDetail(id) {
   };
   document.addEventListener('keydown', sheet._keyHandler);
   loadAttachmentsInto(p);
-  loadParcelInfoInto(p);
 }
 // Added 2026-09-14 — the Survey Records list's "Details" button, for a
 // survey record with NO linked acquisition property (openSurveyDetails()
 // routes straight to the existing openDetail() instead, unchanged, when a
 // linked property does exist). Reuses the same detail-sheet DOM/CSS and
-// buildSurveyDetailRows()/loadParcelInfoInto()/loadAttachmentsInto() as
-// openDetail() — those two loaders key off {id,lat,lng} and
-// {surveyed,surveyObjectId} respectively, so a small synthetic object
-// stands in for the acquisition property they normally take. Omits the
+// buildSurveyDetailRows()/loadAttachmentsInto() as openDetail() — that
+// loader keys off {surveyed,surveyObjectId}, so a small synthetic object
+// stands in for the acquisition property it normally takes. Omits the
 // Acquisition Info section and the locationSuspect banner — there is no
 // acquisition record to compare this survey point against.
 function openSurveyOnlyDetail(r) {
@@ -3198,11 +3180,6 @@ function openSurveyOnlyDetail(r) {
     </div>
     ${kvSection('Survey Results', surveyDetailRows)}
     <div class="sdiv"></div>
-    <div class="sec" id="parcel-sec">
-      <div class="sec-label">Parcel Info</div>
-      <div id="parcel-body" style="font-size:13px;color:var(--text3)">Loading…</div>
-    </div>
-    <div class="sdiv"></div>
     <div class="sec" id="attachments-sec">
       <div class="sec-label">Survey Photos</div>
       <div id="attachments-body" style="font-size:13px;color:var(--text3)">Loading…</div>
@@ -3228,12 +3205,6 @@ function openSurveyOnlyDetail(r) {
   };
   document.addEventListener('keydown', sheet._keyHandler);
   loadAttachmentsInto({ surveyed: true, surveyObjectId: r.objectId });
-  if (hasGeom) {
-    loadParcelInfoInto({ id: 's' + r.objectId, lat: r.lat, lng: r.lng });
-  } else {
-    const box = document.getElementById('parcel-body');
-    if (box) box.innerHTML = '<div style="color:var(--text3)">No location on file for this record.</div>';
-  }
 }
 function closeDetail() {
   const sheet = document.getElementById('detail-sheet');

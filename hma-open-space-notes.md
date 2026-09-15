@@ -975,14 +975,170 @@ split differently.
   as an unmatched yellow X. Re-ran the city-mismatch tier's own test suite
   (see above) afterward to confirm this didn't regress that fix.
 
+## Partial-match tier: small edit-distance tolerance for near-miss spellings
+Fixed 2026-09-15. User feedback (screenshots): "529 KINGS HILL BLVD"
+(acquisition list) sat right next to "529 Kings Hills Blvd" (survey record)
+— same house number, same city (Pigeon Forge), same suffix (Blvd) — yet the
+survey point still showed "No address match on acquired list," while the
+acquisition property was already shown Surveyed via a completely different
+survey record 0.9 miles away that happened to match its address text
+exactly. "why is this not being caught?"
+
+Root cause: the singular/plural difference — "HILL" vs. "HILLS" — meant
+even the already-fixed `coreCompact` comparison (exact string equality)
+failed; the previous two fixes this session (apostrophes, then internal
+spacing) each patched one specific kind of near-miss, and this is a third,
+different kind (a one-letter spelling variant) that neither covers.
+
+- Added a small **edit-distance tolerance** on top of the exact
+  `coreCompact` match: `levenshtein()` (a plain single-character
+  insert/delete/substitute distance function) plus `coresMatch()`, which
+  first tries exact equality (the common case, cheap) and falls back to
+  "edit distance ≤ `CONFIG.coreFuzzyMaxEdits`" (set to 2) when the shorter
+  of the two core strings is at least 4 characters (guards against a very
+  short/generic core matching too loosely). `correlateAll()`'s partial-tier
+  comparison now calls `coresMatch()` instead of comparing `coreCompact`
+  directly.
+- Deliberately NOT a general fuzzy-address search: `coresMatch()` is only
+  ever reached after the same house-number, city, and
+  `CONFIG.partialMatchFeet` (600 ft) gates every other check in this tier
+  already requires — so by the time it runs, the candidate is already
+  narrowed down to "a survey point right at this one specific address."
+  That's what keeps a distance-2 tolerance safe rather than opening the
+  door to unrelated streets matching on vague similarity.
+- Verified against the real reported case (529 Kings Hill(s) Blvd, real
+  acquired-list coordinates): a synthetic survey record ~365 ft away now
+  correctly matches via the `partial` tier; the same record moved to
+  ~1,100 ft (outside `CONFIG.partialMatchFeet`) correctly does NOT match,
+  confirming the distance gate still holds regardless of the new fuzzy
+  tolerance. Re-ran the city-mismatch and compound-street-name test suites
+  from the two fixes above afterward to confirm neither regressed.
+
+## Map popups, list cards: show the acquisition-list address a survey record actually matched
+Added 2026-09-15, same user session as the fixes above — after three
+different address-normalization gaps in a row were only diagnosable by
+manually comparing two separate popups (or, worse, not visible in the UI
+at all — the "409 Brook View" city-mismatch case had no way to see the
+survey's own city until that fix), the user asked more generally: "can
+this show the corresponding address names used to match."
+
+- **`matchedAcquisitionAddr(r)`** (new) resolves the acquisition-list
+  `{ address, city }` a survey record correlates to — for direct side-by-
+  side display. Prefers the property that's actually claimed this record
+  as its official match (`properties.surveyObjectId`, the authoritative
+  answer); falls back to whichever looser-tier candidate address
+  `correlateAll()` stashed on the record (new fields, set alongside the
+  existing `partialMatched`/`proximityMatched`/`cityMismatchMatched`
+  booleans and reset the same way each run: `r.partialCandidateAddr`,
+  `r.proximityCandidateAddr`, `r.cityMismatchCandidateAddr`) for a record
+  that was flagged as a correlation but didn't end up "winning" as any one
+  property's official match (see the "flag BOTH candidates" comment in
+  `correlateAll()` — this can genuinely happen, e.g. a property that
+  already had a full address+city hit to a DIFFERENT, distant record still
+  flags a nearby partial/city-mismatch candidate too).
+- **Survey Record map popup** (`buildSurveyPointPopupHtml`): for a
+  'partial' (blue) record only — 'matched' is already identical text, and
+  'none' has nothing to show — a new "Acquisition List" row shows the
+  matched property's address/city directly above Inspected/Inspector/City/
+  Region, so the two address strings sit side by side without needing to
+  also open the acquisition marker's own popup.
+- **Acquisition List Location popup** (`buildPopupHtml`): the reciprocal —
+  a new "Survey Record" row shows the survey's own submitted address/city,
+  shown whenever the property matched by anything OTHER than a clean full
+  address+city hit (i.e. `matchMethods` isn't exactly `['address']']` —
+  proximity, city-mismatch, or partial all mean the two texts don't read
+  identically).
+- **Survey Records list card** (`renderSurveyCard`): same idea, a small
+  new `.card-addr-compare` row ("vs. <acquisition address>, <city>") under
+  the badges for a 'partial' card, so the mismatch is visible while
+  scrolling the list without opening Details either.
+- Verified all three render correctly for the "529 Kings Hill(s) Blvd"
+  case from the fix above: the survey popup's "Acquisition List" row and
+  the card's "vs." row both showed "529 KINGS HILL BLVD, Pigeon Forge",
+  and the acquisition popup's "Survey Record" row showed "529 Kings Hills
+  Blvd, Pigeon Forge" — confirming the comparison surfaces in both
+  directions.
+
+## Toggle default changed to Survey Records, moved to the left
+Changed 2026-09-15 per user request. `listMode` now defaults to
+`'surveys'` instead of `'properties'`, and the "Survey Records" button is
+now the first (left) button in `.list-mode-toggle`, with "TN Properties
+Acquired" second — both the HTML's initial `active`/`aria-selected` state
+and the JS default were updated together so they agree on load (previously
+the acquisition list was both the default and the left button; now Survey
+Records is both). `setListMode()` itself is unchanged — it already looks
+up both buttons by id regardless of DOM order.
+
+## Detail sheet: removed the Parcel Info section
+Changed 2026-09-15 per user request ("no need to include parcel data on
+the details panel"). Both `openDetail()` (acquisition properties) and
+`openSurveyOnlyDetail()` (survey-only records) no longer show a "Parcel
+Info" section — that whole point-in-polygon lookup against the parcels
+service (`queryParcelAtPoint`, `getParcelInfoCached`, `loadParcelInfoInto`,
+and the small `parcelPointCache`) was removed entirely as dead code once
+nothing called it. Parcel attributes are still available the other way
+this app has always shown them: clicking a parcel boundary directly on the
+map still opens its own popup (`buildParcelPopupHtml`, under the PARCELS
+BOUNDARY LAYER section) — that overlay and its popup are untouched, this
+only removed the *second*, redundant copy that used to also appear inside
+the detail sheet.
+
+## Removed the "Validate Acquisition Locations" export
+Changed 2026-09-15 per user request ("remove the acquisition location
+validation, it is confusing people"). This was the filter-drawer button
+that exported an .xlsx/.csv report of acquisition properties whose point
+fell outside a rough Tennessee bounding box — a data-QA tool, not
+something a field user filtering survey points needs to see, and
+apparently confusing in practice. Removed the button and its entire JS
+implementation (`TN_BBOX`, `inTnBbox()`, `validateAcquisitionLocation()`,
+`buildLocationValidationData()`, `LOCATION_VALIDATION_HEADER`,
+`locationValidationRow()`, `exportLocationValidationXlsx()`,
+`exportLocationValidationCsv()`, `generateLocationValidationReport()`).
+**Note**: this is a different feature from the per-property "Location May
+Be Wrong" warning banner/triangle that can show on an individual
+property's popup or detail sheet (`locationSuspect` /
+`CONFIG.suspectLocationFeet`) — that one was left in place, since the
+request named the export specifically. Flag if that one should go too.
+
+## Filter drawer: every row now shows live counts
+Changed 2026-09-15 per user request ("can all of the filters show the
+counts"). Previously only the Survey Points row had per-option counts
+(`surveyMatchCounts`); now Status ("TN Properties Acquired"), Region, and
+the County dropdown all do too, following the same rule: each option's
+count is scoped by every OTHER active filter, never by itself, so the
+number always answers "how many would picking this leave on screen." A
+new shared helper, `propertyMatchesStatus(p, status)`, is now the single
+place that defines what each status option means — used by both
+`getFiltered()` (the actual filter) and `buildFilterGrid()` (the status
+and region counts, since region counts need to already respect whatever
+status is active) — added specifically so the count logic and the filter
+logic can't drift apart the way it's easy to accidentally let happen.
+
+## "TN Properties Acquired": added a Partial Match option
+Changed 2026-09-15 per user request ("should acquired also show partial
+matches"). New 4th status option alongside All/Surveyed/Not Surveyed,
+using the blue checkmark icon already defined for the Survey Points row
+(`STATUS_ICONS.partial`). It's a subset of Surveyed — a property counts
+as "Partial Match" when it's surveyed but its match wasn't a full, clean
+address+city hit (i.e. it also or only involved the proximity,
+city-mismatch, or fuzzy-partial-street correlation tier). Backed by a new
+`isCleanAddressMatch(p)` helper (`matchMethods.length === 1 &&
+matchMethods[0] === 'address'`) that `propertyMatchesStatus()` calls for
+the `'partial'` case — the same helper is also reusable by the "Survey
+Record" address-comparison row in the acquisition popup, though that row
+still has its own inline equivalent check for now (not yet refactored to
+call the helper — low-priority cleanup).
+
 ## Still needed before this can go live
 - **Hosting**: `https://temagis.github.io/HMA_Open_Space/` needs a real GitHub Pages
   deployment, and that exact URL needs to be added to the AGOL app item's
   (`d4YpqfdNJGpPJqsS`) Redirect URIs list.
 - **Parcels layer live check**: confirm the parcels service actually accepts this
-  app's AGOL token (never confirmed — see above), and sanity-check a few real popups/
-  detail-sheet Parcel Info sections against the generic attribute rendering to see if
+  app's AGOL token (never confirmed — see above), and sanity-check a few real map
+  popups (`buildParcelPopupHtml`) against the generic attribute rendering to see if
   a curated, friendlier field list is worth building once the real schema is visible.
+  (The detail sheet no longer has its own separate Parcel Info section as of
+  2026-09-15 — see above — so this is now the only place parcel data shows up.)
 - **Proximity threshold**: 150 ft is a starting default (`CONFIG.proximityMatchFeet`)
   — revisit once the team has used it in the field for a bit.
 - **Attachments**: survey-record photos are fetched the same way PREDS Summary does

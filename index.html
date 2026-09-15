@@ -853,23 +853,31 @@ function correlationKey(streetAddr, city) { return normAddr(streetAddr) + '@' + 
 // does NOT strip directional tokens (N/S/E/W/NE/NW/SE/SW) — those usually
 // mean a genuinely different street/segment, not just a formatting gap.
 const STREET_TYPE_SUFFIXES = new Set(['ST','AVE','DR','RD','LN','CT','BLVD','CIR','PL','HWY','ALY','TRL','PKWY','TER']);
-// Splits a street address into { houseNum, core }: the leading house
-// number, and everything else with a trailing street-type suffix (if
-// any) stripped off. Used by the PARTIAL ADDRESS MATCH correlation tier
-// (see correlateAll()) to compare two addresses more loosely than
-// correlationKey()'s exact normalized-string match — two addresses
-// "partially match" when they have the same houseNum AND the same
-// non-empty core (correlateAll() does that comparison directly, since it
-// precomputes and reuses each survey record's core across every property
-// rather than recomputing it per pair).
+// Splits a street address into { houseNum, core, coreCompact }: the
+// leading house number, and everything else with a trailing street-type
+// suffix (if any) stripped off. Used by the PARTIAL ADDRESS MATCH
+// correlation tier (see correlateAll()) to compare two addresses more
+// loosely than correlationKey()'s exact normalized-string match — two
+// addresses "partially match" when they have the same houseNum AND the
+// same non-empty coreCompact (correlateAll() does that comparison
+// directly, since it precomputes and reuses each survey record's core
+// across every property rather than recomputing it per pair).
+// `coreCompact` (added 2026-09-15, real reported case: acquired-list
+// "1211 WOODSGREEN DR" vs. survey "1211 Woods Green Rd" — same street,
+// same house number, but "WOODSGREEN" one word vs. "WOODS GREEN" two)
+// strips internal spaces too, so a compound street name written as one
+// word on one side and two (or more) on the other is still recognized as
+// the same core — `core` itself is left space-joined and human-readable
+// for anything else that might want to display it.
 function streetCore(streetAddr) {
   const norm = normAddr(streetAddr);
-  if (!norm) return { houseNum: '', core: '' };
+  if (!norm) return { houseNum: '', core: '', coreCompact: '' };
   const tokens = norm.split(' ');
   const houseNum = /^\d+[A-Z]?$/.test(tokens[0]) ? tokens[0] : '';
   let rest = houseNum ? tokens.slice(1) : tokens;
   if (rest.length > 1 && STREET_TYPE_SUFFIXES.has(rest[rest.length - 1])) rest = rest.slice(0, -1);
-  return { houseNum, core: rest.join(' ') };
+  const core = rest.join(' ');
+  return { houseNum, core, coreCompact: core.replace(/\s+/g, '') };
 }
 function haversineFeet(lat1, lon1, lat2, lon2) {
   const R = 20925524.9; // Earth radius in feet
@@ -1336,8 +1344,11 @@ function correlateAll() {
     // an acquired-list point whose address text doesn't normalize to an
     // identical string (most often a missing/typo'd street-type suffix —
     // e.g. acquired-list "7505 ANTIETAM" vs. the survey's "7505 Antietam
-    // Ln") but is clearly the same property — same house number, same
-    // core street name (see streetCore()), and within
+    // Ln" — or a compound street name split differently, e.g. acquired-
+    // list "1211 WOODSGREEN DR" vs. the survey's "1211 Woods Green Rd":
+    // same core once suffix AND internal spacing are both ignored, see
+    // streetCore()'s coreCompact) but is clearly the same property — same
+    // house number, same core street name, and within
     // CONFIG.partialMatchFeet. Tracks the NEAREST such candidate,
     // same pattern as the plain-proximity nearest search just below.
     let partial = null, partialFt = Infinity;
@@ -1345,8 +1356,8 @@ function correlateAll() {
       const d = haversineFeet(prop.lat, prop.lng, r.lat, r.lng);
       if (d < nearestFt) { nearestFt = d; nearest = r; }
       if (d <= CONFIG.partialMatchFeet && d < partialFt &&
-          propCore.houseNum && propCore.core &&
-          r._core.houseNum === propCore.houseNum && r._core.core === propCore.core &&
+          propCore.houseNum && propCore.coreCompact &&
+          r._core.houseNum === propCore.houseNum && r._core.coreCompact === propCore.coreCompact &&
           normCity(r.city) === propCityNorm) {
         partial = r; partialFt = d;
       }

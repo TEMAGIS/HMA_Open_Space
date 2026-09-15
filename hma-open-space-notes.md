@@ -937,6 +937,44 @@ when the two points are demonstrably the same physical spot.
   exists to surface for the exported spreadsheet, so loosening it here
   would defeat its purpose.
 
+## Partial-match tier: also ignore spacing inside a compound street name
+Fixed 2026-09-15. User feedback (screenshots): a "1211 WOODSGREEN DR"
+acquisition property already showed Surveyed/Full Compliance (matched to a
+nearby survey point via some other tier), but a second, separately-
+submitted survey record for the exact same address — "1211 Woods Green
+Rd" — still painted as a plain yellow "No address match on acquired list"
+X right next to it. Same house number, same city (Murfreesboro on both
+sides this time — not another city-mismatch case), same core street name —
+just "WOODSGREEN" as one word on the acquisition list vs. "Woods Green" as
+two words on the survey side. "is there any logic tha[t] capture[s]
+these?"
+
+Root cause: `streetCore()` (used by the PARTIAL ADDRESS MATCH tier) already
+stripped the trailing street-type suffix before comparing two addresses'
+"core" street name — but it compared the core as a literal, space-joined
+string, so "WOODSGREEN" (one token) and "WOODS GREEN" (two tokens, joined
+with a space) never matched even though they're clearly the same name
+split differently.
+
+- `streetCore()` now also returns `coreCompact` — the same core with ALL
+  internal spaces removed ("WOODS GREEN" → "WOODSGREEN") — alongside the
+  original space-joined `core` (left as-is for anything that wants a
+  readable version). The partial-match comparison in `correlateAll()` now
+  compares `coreCompact` instead of `core`, so a compound street name
+  written as one word on one side and multiple words on the other is
+  recognized as the same street.
+- Still gated by the same safeguards as before — same house number AND
+  within `CONFIG.partialMatchFeet` (600 ft) — so this stays a tight,
+  last-resort tier rather than a loose "sounds similar" match; it only
+  loosens the specific "one word vs. several" formatting gap, nothing else.
+- Verified against the real reported case (`1211 WOODSGREEN DR` /
+  Murfreesboro, real acquired-list coordinates) with a synthetic survey
+  record `1211 Woods Green Rd`, same city, ~220 ft away (outside the 150 ft
+  proximity threshold, inside the 600 ft partial threshold): now correctly
+  correlates via the `partial` tier (blue, "Surveyed") instead of showing
+  as an unmatched yellow X. Re-ran the city-mismatch tier's own test suite
+  (see above) afterward to confirm this didn't regress that fix.
+
 ## Still needed before this can go live
 - **Hosting**: `https://temagis.github.io/HMA_Open_Space/` needs a real GitHub Pages
   deployment, and that exact URL needs to be added to the AGOL app item's

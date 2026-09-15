@@ -1781,27 +1781,49 @@ function buildFilterGrid() {
       <div class="fgt-icon" aria-hidden="true">${STATUS_ICONS[o.key]}</div>
       <div class="fgt-label">${o.label}<span class="fgt-count">${statusCounts[o.key]}</span></div>
     </button>`).join('');
-  const regionScope = properties.filter(p =>
-    (activeCounty === 'all' || p.county === activeCounty) && propertyMatchesStatus(p, activeStatus)
-  );
-  const regionCounts = { all: regionScope.length };
-  Object.keys(REGIONS).forEach(key => { regionCounts[key] = regionScope.filter(p => p.region === key).length; });
+  // SURVEY_ONLY_MODE (?mode=surveyonly): Region/County counts normally
+  // describe the acquisition list (properties), same as the Status row
+  // above — but that list is entirely hidden in this mode (no markers, no
+  // list), so showing its counts next to a map that only has survey
+  // points was misleading (e.g. "All 1300" when the map might have a
+  // fraction of that many survey points). Scope both rows to the survey
+  // records actually on screen instead, mirroring surveyMatchScope below
+  // (same valid-geometry check, same SURVEY_FIELDS.region/county lookup).
+  let regionScope, regionCounts, countySource, counties, countyScope, countyCounts;
+  if (SURVEY_ONLY_MODE) {
+    const validSurveys = surveyRecords.filter(r =>
+      Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0));
+    regionScope = validSurveys.filter(r => activeCounty === 'all' || r.attrs[SURVEY_FIELDS.county] === activeCounty);
+    regionCounts = { all: regionScope.length };
+    Object.keys(REGIONS).forEach(key => { regionCounts[key] = regionScope.filter(r => r.attrs[SURVEY_FIELDS.region] === key).length; });
+    countySource = activeRegion === 'all' ? validSurveys : validSurveys.filter(r => r.attrs[SURVEY_FIELDS.region] === activeRegion);
+    counties = [...new Set(countySource.map(r => r.attrs[SURVEY_FIELDS.county]).filter(Boolean))].sort();
+    countyScope = countySource;
+    countyCounts = {};
+    counties.forEach(c => { countyCounts[c] = countyScope.filter(r => r.attrs[SURVEY_FIELDS.county] === c).length; });
+  } else {
+    regionScope = properties.filter(p =>
+      (activeCounty === 'all' || p.county === activeCounty) && propertyMatchesStatus(p, activeStatus)
+    );
+    regionCounts = { all: regionScope.length };
+    Object.keys(REGIONS).forEach(key => { regionCounts[key] = regionScope.filter(p => p.region === key).length; });
+    // County list is scoped to the active Region filter — picking a
+    // region narrows the county dropdown down to just the counties that
+    // actually occur in that region, instead of always listing all 42
+    // statewide. Also scoped by the active Status filter (for its
+    // counts, below), consistent with the Region row above.
+    countySource = activeRegion === 'all' ? properties : properties.filter(p => p.region === activeRegion);
+    counties = [...new Set(countySource.map(p => p.county).filter(Boolean))].sort();
+    countyScope = countySource.filter(p => propertyMatchesStatus(p, activeStatus));
+    countyCounts = {};
+    counties.forEach(c => { countyCounts[c] = countyScope.filter(p => p.county === c).length; });
+  }
   const regionOpts = [{ key: 'all', label: 'All', color: null }, ...Object.entries(REGIONS).map(([key, r]) => ({ key, label: r.label, color: r.color }))];
   const regionBtns = regionOpts.map(o => `
     <button class="fgt ${activeRegion === o.key ? 'active' : ''}" data-region="${o.key}" aria-pressed="${activeRegion === o.key ? 'true' : 'false'}" onclick="setRegionFilter('${o.key}')" aria-label="Filter: ${o.label} region">
       <div class="fgt-icon" aria-hidden="true">${o.color ? `<svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="10" fill="${o.color}"/></svg>` : STATUS_ICONS.all}</div>
       <div class="fgt-label">${o.label}<span class="fgt-count">${regionCounts[o.key]}</span></div>
     </button>`).join('');
-  // County list is scoped to the active Region filter — picking a region
-  // narrows the county dropdown down to just the counties that actually
-  // occur in that region, instead of always listing all 42 statewide.
-  // Also now scoped by the active Status filter (for its counts, below),
-  // consistent with the Region row above.
-  const countySource = activeRegion === 'all' ? properties : properties.filter(p => p.region === activeRegion);
-  const counties = [...new Set(countySource.map(p => p.county).filter(Boolean))].sort();
-  const countyScope = countySource.filter(p => propertyMatchesStatus(p, activeStatus));
-  const countyCounts = {};
-  counties.forEach(c => { countyCounts[c] = countyScope.filter(p => p.county === c).length; });
   const countyOpts = [`<option value="all" ${activeCounty === 'all' ? 'selected' : ''}>All Counties (${countyScope.length})</option>`, ...counties.map(c =>
     `<option value="${escapeHtml(c)}" ${activeCounty === c ? 'selected' : ''}>${escapeHtml(c)} (${countyCounts[c]})</option>`)].join('');
   // Counts respect the same Region/County scope and valid-geometry check

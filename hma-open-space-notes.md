@@ -1410,3 +1410,31 @@ directly, with no login involved, is unaffected by the new restore
 script. Re-ran the full existing regression suite (`test_kingshill`,
 `test_woodsgreen`, `test_citymismatch`, `test_geoaddr`, `test_filtergrid`,
 `test_cardicons`, `test_labelwrap`, `test_surveyonly`) — no regressions.
+
+## Fixed: `?mode=surveyonly` Region/County counts still described the hidden acquisition list
+Noticed 2026-09-15, looking at a filter-drawer screenshot from `?mode=
+surveyonly`: the Region row ("All 1300", "East 167", "Middle 749",
+"Southeast 60", "West 324") and "All Counties (1300)" were unchanged from
+normal mode — still counting the 1,300-property acquisition list, even
+though that list is entirely hidden in survey-only mode (no map markers,
+no list, no filter row for it). The numbers next to Region/County didn't
+describe what was actually on screen.
+
+`buildFilterGrid()`'s Region and County blocks now branch on
+`SURVEY_ONLY_MODE`: in that mode both are computed from `surveyRecords`
+(matching each button's `SURVEY_FIELDS.region`/`SURVEY_FIELDS.county`,
+same geometry check `surveyMatchScope` already uses just below) instead
+of from `properties`. Normal mode is untouched — still scoped to the
+acquisition list exactly as before. The "Survey Points (map)" row's own
+counts were already survey-based and needed no change.
+
+Verified with a new Playwright test (`test_surveyonly_counts.js`): a
+synthetic 3-record survey set is used in both modes so a
+properties-based count (1300) and a surveys-based count (3) are
+unmistakably different. Normal mode's Region "All" still reads 1300;
+survey-only mode's reads 3, East reads 2, "All Counties (3)" and "Test
+County (2)" match the synthetic set exactly, and the acquisition section
+stays hidden. Re-ran the full regression suite (`test_kingshill`,
+`test_woodsgreen`, `test_citymismatch`, `test_geoaddr`, `test_filtergrid`,
+`test_cardicons`, `test_labelwrap`, `test_surveyonly`,
+`test_oauth_redirect`) — no regressions.

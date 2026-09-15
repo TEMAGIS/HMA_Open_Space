@@ -237,6 +237,22 @@
   .list-header { padding: 10px 16px 6px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .list-count { font-size: 12px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.6px; }
+  /* Added 2026-09-14: toggle between the acquisition-property list and a
+     Survey Records list (browsing survey submissions directly, independent
+     of any filter choice) — per user request "can the list be of the
+     survey points". Styled like a small segmented control, sitting above
+     the list-count/filter row so it's the first thing establishing which
+     dataset the rest of the panel (count text, cards, Details sheet)
+     currently reflects. */
+  .list-mode-toggle { display: flex; gap: 4px; padding: 8px 16px 0; }
+  .list-mode-btn {
+    flex: 1; text-align: center; padding: 7px 8px; border-radius: var(--radius-sm);
+    border: 1.5px solid var(--border); background: var(--surface); color: var(--text2);
+    font-size: 12px; font-weight: 700; font-family: 'DM Sans', sans-serif;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .list-mode-btn:hover { border-color: var(--tema-blue); color: var(--tema-blue); }
+  .list-mode-btn.active { background: var(--tema-blue); border-color: var(--tema-blue); color: white; }
   #last-refreshed { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; margin-top: 2px; }
   .stale-badge { display: inline-block; background: #fdeed3; color: #6b4200; border: 1px solid #d4920a; padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 700; margin-left: 4px; vertical-align: 2px; }
   #asset-list { display: flex; flex-direction: column; padding: 0 0 80px; }
@@ -512,6 +528,10 @@
   </div>
   <main id="list-section" aria-label="Acquired properties">
     <div class="list-controls">
+      <div class="list-mode-toggle" role="tablist" aria-label="Choose which list to browse">
+        <button type="button" id="list-mode-properties" class="list-mode-btn active" role="tab" aria-selected="true" onclick="setListMode('properties')">TN Properties Acquired</button>
+        <button type="button" id="list-mode-surveys" class="list-mode-btn" role="tab" aria-selected="false" onclick="setListMode('surveys')">Survey Records</button>
+      </div>
       <div class="list-header">
         <div>
           <div class="list-count" id="list-count" aria-live="polite">Loading…</div>
@@ -1115,6 +1135,14 @@ let searchTerm = '', selectedId = null;
 let boundaryLayerGroup = null, surveyPointsLayerGroup = null, matchHighlightLayer = null;
 let boundaryMoveHandler = null, boundaryFetchToken = 0;
 let renderedList = [];
+// Added 2026-09-14 — the list/toggle feature: 'properties' (default, the
+// acquisition list unchanged) or 'surveys' (browse survey submissions
+// directly). See setListMode()/applyFiltersAndRender()/renderList().
+let listMode = 'properties';
+let renderedSurveyList = [];
+let selectedSurveyObjectId = null;
+let surveyMarkers = {};             // survey point Leaflet markers, keyed by objectId — populated in
+                                     // renderSurveyPointsLayer(), used to open/fly to a marker from a list-card click
 let refreshTimer = null;
 let lastSurveyFetchTs = null, lastSurveyFetchError = false;
 function getProperty(id) { return properties.find(p => String(p.id) === String(id)); }
@@ -1489,15 +1517,22 @@ function buildFilterGrid() {
       <div class="fgt-icon" aria-hidden="true">${SURVEY_MATCH_ICONS[o.key]}</div>
       <div class="fgt-label">${o.label}<span class="fgt-count">${surveyMatchCounts[o.key]}</span></div>
     </button>`).join('');
+  // Fixed 2026-09-14, per user request: Survey Points moved to the top of
+  // the drawer (was last) — a field user opening Filter is most often
+  // checking the survey layer's match quality, so that's the thing worth
+  // seeing first rather than scrolled/tapped to last. "Survey Status"
+  // renamed to "TN Properties Acquired" to read as its own distinct
+  // section (the acquisition list) now that it isn't first/default-
+  // assumed to be the primary filter.
   document.getElementById('filter-grid').innerHTML = `
-    <div class="buf-label">Survey Status</div>
+    <div class="buf-label">Survey Points (map)</div>
+    <div class="fg-row surveymatch-row" role="group" aria-label="Filter survey points on the map by address match">${surveyMatchBtns}</div>
+    <div class="buf-label">TN Properties Acquired</div>
     <div class="fg-row status-row" role="group" aria-label="Filter by survey status">${statusBtns}</div>
     <div class="buf-label">Region</div>
     <div class="fg-row region-row" role="radiogroup" aria-label="Filter by region">${regionBtns}</div>
     <div class="buf-label">County${activeRegion !== 'all' ? ` (${REGIONS[activeRegion].label})` : ''}</div>
-    <select id="county-filter" class="county-select" aria-label="Filter by county" onchange="setCountyFilter(this.value)">${countyOpts}</select>
-    <div class="buf-label">Survey Points (map)</div>
-    <div class="fg-row surveymatch-row" role="group" aria-label="Filter survey points on the map by address match">${surveyMatchBtns}</div>`;
+    <select id="county-filter" class="county-select" aria-label="Filter by county" onchange="setCountyFilter(this.value)">${countyOpts}</select>`;
 }
 function toggleFilterDrawer(forceClose = false) {
   const drawer = document.getElementById('filter-drawer');
@@ -1609,9 +1644,21 @@ function getFiltered() {
 }
 function applyFiltersAndRender() {
   renderedList = getFiltered();
-  const surveyedCount = properties.filter(p => p.surveyed).length;
-  document.getElementById('list-count').textContent =
-    `${renderedList.length} of ${properties.length} propert${properties.length !== 1 ? 'ies' : 'y'} · ${surveyedCount} surveyed`;
+  // listMode === 'surveys': the list-count line describes the Survey
+  // Records list instead of the acquisition list, but the acquisition
+  // list/markers are still kept current underneath (renderedList/
+  // refreshMarkers() above) — flipping the toggle back to "TN Properties
+  // Acquired" doesn't need to recompute anything.
+  if (listMode === 'surveys') {
+    renderedSurveyList = getFilteredSurveyRecords();
+    const matchedCount = renderedSurveyList.filter(r => surveyMatchState(r) !== 'none').length;
+    document.getElementById('list-count').textContent =
+      `${renderedSurveyList.length} of ${surveyRecords.length} survey record${surveyRecords.length !== 1 ? 's' : ''} · ${matchedCount} matched`;
+  } else {
+    const surveyedCount = properties.filter(p => p.surveyed).length;
+    document.getElementById('list-count').textContent =
+      `${renderedList.length} of ${properties.length} propert${properties.length !== 1 ? 'ies' : 'y'} · ${surveyedCount} surveyed`;
+  }
   updateLastRefreshed();
   refreshMarkers();
   renderList();
@@ -1621,11 +1668,70 @@ function applyFiltersAndRender() {
   // [] then; it just (re)renders an empty layer).
   renderSurveyPointsLayer();
 }
+// Toggle between the acquisition-property list (default) and a Survey
+// Records list — added 2026-09-14 per user request. Independent of every
+// other filter: switching modes doesn't reset Region/County/Survey Points/
+// search, it just changes which dataset the list (and its count line)
+// shows. The map/markers are unaffected either way.
+function setListMode(mode) {
+  if (mode !== 'properties' && mode !== 'surveys') return;
+  if (listMode === mode) return;
+  listMode = mode;
+  document.getElementById('list-mode-properties').classList.toggle('active', mode === 'properties');
+  document.getElementById('list-mode-properties').setAttribute('aria-selected', mode === 'properties' ? 'true' : 'false');
+  document.getElementById('list-mode-surveys').classList.toggle('active', mode === 'surveys');
+  document.getElementById('list-mode-surveys').setAttribute('aria-selected', mode === 'surveys' ? 'true' : 'false');
+  applyFiltersAndRender();
+}
+// The filter chain shared by the Survey Points map layer (renderSurveyPointsLayer)
+// and the Survey Records list (getFilteredSurveyRecords) — extracted 2026-09-14
+// so the two can never drift apart. Region/County/the Survey Points match
+// filter (activeSurveyMatch) all apply; Survey Status does not (every
+// record here is, by definition, a completed survey).
+function baseFilteredSurveyRecords() {
+  return surveyRecords
+    .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0))
+    .filter(r => activeRegion === 'all' || r.attrs[SURVEY_FIELDS.region] === activeRegion)
+    .filter(r => activeCounty === 'all' || r.attrs[SURVEY_FIELDS.county] === activeCounty)
+    .filter(r => activeSurveyMatch === 'all' ||
+      (activeSurveyMatch === 'unmatched' ? surveyMatchState(r) === 'none' : surveyMatchState(r) === activeSurveyMatch));
+}
+// Adds search-term filtering and most-recent-inspection-first sorting on
+// top of the shared chain above — list-only, so typing in the search box
+// doesn't also thin out the map's Survey Points layer.
+function getFilteredSurveyRecords() {
+  let list = baseFilteredSurveyRecords();
+  if (searchTerm) {
+    list = list.filter(r => {
+      const a = r.attrs;
+      const h = `${a[SURVEY_FIELDS.address] || ''} ${a[SURVEY_FIELDS.city] || ''} ${a[SURVEY_FIELDS.region] || ''} ${a[SURVEY_FIELDS.county] || ''}`.toLowerCase();
+      return h.includes(searchTerm);
+    });
+  }
+  list.sort((a, b) => {
+    const an = inspectionDateMs(a), bn = inspectionDateMs(b);
+    if (an !== null && bn !== null) return bn - an;
+    if (an !== null) return -1;
+    if (bn !== null) return 1;
+    return (a.attrs[SURVEY_FIELDS.address] || '').localeCompare(b.attrs[SURVEY_FIELDS.address] || '');
+  });
+  return list;
+}
+// Same pattern as surveyDateMs(p) above, but keyed off a raw survey record
+// (r.attrs) rather than an acquisition property — used to sort the Survey
+// Records list most-recently-inspected first.
+function inspectionDateMs(r) {
+  const v = r.attrs[SURVEY_FIELDS.inspectionDate];
+  if (isBlank(v)) return null;
+  const t = new Date(v).getTime();
+  return Number.isFinite(t) ? t : null;
+}
 // ════════════════════════════════════════════════════════════════
 //  LIST RENDERING
 // ════════════════════════════════════════════════════════════════
 function renderList() {
   const c = document.getElementById('asset-list');
+  if (listMode === 'surveys') { renderSurveyListInto(c); return; }
   if (!renderedList.length) {
     const isFiltering = activeStatus !== 'all' || activeRegion !== 'all' || activeCounty !== 'all' || searchTerm;
     if (properties.length === 0 || !isFiltering) {
@@ -1636,6 +1742,70 @@ function renderList() {
     return;
   }
   c.innerHTML = renderedList.map(renderCard).join('');
+}
+// Survey Records list — parallels renderList()/renderCard() above for
+// listMode === 'surveys'. A card's match-state (surveyMatchState()) stands
+// in for the acquisition list's Surveyed/Not Surveyed badge, since every
+// record here IS a completed survey; what varies is whether it correlates
+// to something on the acquisition list.
+function renderSurveyListInto(c) {
+  if (!renderedSurveyList.length) {
+    const isFiltering = activeRegion !== 'all' || activeCounty !== 'all' || activeSurveyMatch !== 'all' || searchTerm;
+    if (surveyRecords.length === 0 || !isFiltering) {
+      c.innerHTML = '<div class="empty-state" role="status"><div class="icon" aria-hidden="true">📋</div><p>No survey records to display.</p></div>';
+    } else {
+      c.innerHTML = '<div class="empty-state" role="status"><div class="icon" aria-hidden="true">🔍</div><p>No survey records match your search.<br>Try a different filter or search term.</p></div>';
+    }
+    return;
+  }
+  c.innerHTML = renderedSurveyList.map(renderSurveyCard).join('');
+}
+function renderSurveyCard(r) {
+  const state = surveyMatchState(r);
+  const color = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
+  const icon = state === 'matched' ? STATUS_ICONS.surveyed : state === 'partial' ? SURVEY_MATCH_ICONS.partial : SURVEY_MATCH_ICONS.unmatched;
+  const label = state === 'matched' ? 'Address Match' : state === 'partial' ? 'Partial Match' : 'No Address Match';
+  const a = r.attrs;
+  const address = a[SURVEY_FIELDS.address] || 'Unknown address';
+  const city = a[SURVEY_FIELDS.city] || '';
+  const county = a[SURVEY_FIELDS.county] || '';
+  const compliance = complianceInfo(a[SURVEY_FIELDS.complianceStatus]);
+  const inspDateLabel = !isBlank(a[SURVEY_FIELDS.inspectionDate]) ? fmtDateOnly(a[SURVEY_FIELDS.inspectionDate]) : null;
+  const inspector = a[SURVEY_FIELDS.inspectorName];
+  const badges = [
+    inspDateLabel ? `<span class="meta-badge">🗓 ${escapeHtml(inspDateLabel)}</span>` : '',
+    compliance ? `<span class="meta-badge" style="background:${compliance.color}18;border-color:${compliance.color}55;color:${compliance.color}">${escapeHtml(compliance.label)}</span>` : '',
+    !isBlank(inspector) ? `<span class="meta-badge">🧑 ${escapeHtml(inspector)}</span>` : '',
+  ].filter(Boolean).join('');
+  const sid = 's' + r.objectId;
+  return `<article class="asset-card ${String(selectedSurveyObjectId) === String(r.objectId) ? 'selected' : ''}" id="card-${sid}"
+    data-survey-id="${sid}" role="listitem" tabindex="0"
+    aria-label="${escapeHtml(address)}, ${escapeHtml(city)}, ${label}">
+    <div class="card-body">
+      <div class="card-strip" style="background:${color}"></div>
+      <div class="card-content">
+        <div class="card-top">
+          <div class="type-icon">${icon}</div>
+          <div class="card-titles">
+            <span class="card-type-label" style="color:${color}">${label}</span>
+            <div class="card-title-divider"></div>
+            <div class="card-addr-block">
+              <div class="card-name">${escapeHtml(address)}</div>
+              <div class="card-cityzip">${escapeHtml(city)}</div>
+              ${!isBlank(county) ? `<div class="card-county">${escapeHtml(county)}</div>` : ''}
+            </div>
+          </div>
+        </div>
+        ${badges ? `<div class="meta-badges">${badges}</div>` : ''}
+      </div>
+    </div>
+    <div class="card-footer">
+      <button class="card-action primary" data-action="survey-details" data-survey-id="${sid}" aria-label="View details for ${escapeHtml(address)}">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        Details
+      </button>
+    </div>
+  </article>`;
 }
 function statusBadgeHtml(p) {
   const color = p.surveyed ? STATUS_COLORS.surveyed : STATUS_COLORS.unsurveyed;
@@ -1707,6 +1877,12 @@ function bindListHandlers() {
   if (!list || list._bound) return;
   list._bound = true;
   list.addEventListener('click', (e) => {
+    const surveyBtn = e.target.closest('.card-action[data-survey-id]');
+    if (surveyBtn) {
+      e.stopPropagation();
+      openSurveyDetails(surveyBtn.getAttribute('data-survey-id'));
+      return;
+    }
     const btn = e.target.closest('.card-action[data-asset-id]');
     if (btn) {
       e.stopPropagation();
@@ -1714,16 +1890,42 @@ function bindListHandlers() {
       openDetail(id);
       return;
     }
+    const surveyCard = e.target.closest('.asset-card[data-survey-id]');
+    if (surveyCard) { selectSurveyCard(surveyCard.getAttribute('data-survey-id')); return; }
     const card = e.target.closest('.asset-card[data-asset-id]');
     if (card) selectProperty(card.getAttribute('data-asset-id'));
   });
   list.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
+    const surveyCard = e.target.closest('.asset-card[data-survey-id]');
+    if (surveyCard && e.target === surveyCard) { e.preventDefault(); selectSurveyCard(surveyCard.getAttribute('data-survey-id')); return; }
     const card = e.target.closest('.asset-card[data-asset-id]');
     if (!card || e.target !== card) return;
     e.preventDefault();
     selectProperty(card.getAttribute('data-asset-id'));
   });
+}
+// Looks up a survey record from a list-card's data-survey-id ("s" + objectId).
+function surveyRecordFromCardId(sid) {
+  const objId = sid.slice(1);
+  return surveyRecords.find(x => String(x.objectId) === objId);
+}
+function selectSurveyCard(sid) {
+  const r = surveyRecordFromCardId(sid);
+  if (r) selectSurveyRecord(r);
+}
+// "Details" button on a Survey Records list card — opens the linked
+// acquisition property's existing detail sheet when one exists (identical
+// to clicking Details on that property's own card), otherwise a reduced
+// survey-only detail view (openSurveyOnlyDetail) since there's no
+// acquisition record to show alongside it.
+function openSurveyDetails(sid) {
+  const r = surveyRecordFromCardId(sid);
+  if (!r) return;
+  const linkedProp = properties.find(p => p.surveyObjectId === r.objectId);
+  if (linkedProp) { openDetail(linkedProp.id); return; }
+  selectSurveyRecord(r);
+  openSurveyOnlyDetail(r);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1915,7 +2117,11 @@ function selectProperty(id) {
     map.once('moveend', ensureMatchVisible);
   }
   showMatchHighlight(p);
-  document.querySelectorAll('.asset-card').forEach(c => c.classList.remove('selected'));
+  // Only clears acquisition-list cards ([data-asset-id]) — a Survey Records
+  // list card ([data-survey-id]) manages its own highlighting in
+  // selectSurveyRecord(), so the two lists' selections don't clobber each
+  // other when a survey card's Details/click delegates into this function.
+  document.querySelectorAll('.asset-card[data-asset-id]').forEach(c => c.classList.remove('selected'));
   const card = document.getElementById('card-' + p.id);
   if (card) { card.classList.add('selected'); card.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
 }
@@ -1931,7 +2137,21 @@ function selectProperty(id) {
 // shows the new one (halo, connector line, map fly-to, list card, its own
 // popup) — the exact same behavior as clicking that property's own marker
 // or list card.
+// Added 2026-09-14: also tracks/highlights this record's own card in the
+// Survey Records list (selectedSurveyObjectId), independent of whichever
+// acquisition card is highlighted below — the two lists can each show
+// their own selection at once. When there's no linked property, also
+// flies the map to (and opens the popup of) this survey point's own
+// marker (surveyMarkers[]), since selectProperty() won't run to do that.
 function selectSurveyRecord(r) {
+  if (selectedSurveyObjectId != null) {
+    const prevCard = document.getElementById('card-s' + selectedSurveyObjectId);
+    if (prevCard) prevCard.classList.remove('selected');
+  }
+  selectedSurveyObjectId = r.objectId;
+  const surveyCard = document.getElementById('card-s' + r.objectId);
+  if (surveyCard) { surveyCard.classList.add('selected'); surveyCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+
   const linkedProp = properties.find(p => p.surveyObjectId === r.objectId);
   if (linkedProp) { selectProperty(linkedProp.id); return; }
   // No linked acquisition record at all (a true "No Address Match" survey
@@ -1944,7 +2164,15 @@ function selectSurveyRecord(r) {
   }
   selectedId = null;
   clearMatchHighlight();
-  document.querySelectorAll('.asset-card').forEach(c => c.classList.remove('selected'));
+  document.querySelectorAll('.asset-card[data-asset-id]').forEach(c => c.classList.remove('selected'));
+  const hasGeom = Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0);
+  const mk = surveyMarkers[r.objectId];
+  if (hasGeom) {
+    map.flyTo([r.lat, r.lng], Math.max(map.getZoom(), DEFAULT_SELECT_ZOOM), { duration: 0.9 });
+    if (mk) map.once('moveend', () => mk.openPopup());
+  } else if (mk) {
+    mk.openPopup();
+  }
 }
 // ════════════════════════════════════════════════════════════════
 //  PARCELS BOUNDARY LAYER — TN statewide parcel/property-boundary
@@ -2131,24 +2359,17 @@ function surveyPointIcon(state) {
 }
 function renderSurveyPointsLayer() {
   if (surveyPointsLayerGroup) { map.removeLayer(surveyPointsLayerGroup); surveyPointsLayerGroup = null; }
-  const layers = surveyRecords
-    .filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0))
-    // Region/County now scope this layer too, same as the acquisition
-    // list/map — a survey record's own region/county attributes decide
-    // whether it's in scope. Survey Status doesn't apply here (every
-    // record in this layer is, by definition, a completed survey — the
-    // acquisition-list's surveyed/not-surveyed distinction doesn't map
-    // onto survey records themselves).
-    .filter(r => activeRegion === 'all' || r.attrs[SURVEY_FIELDS.region] === activeRegion)
-    .filter(r => activeCounty === 'all' || r.attrs[SURVEY_FIELDS.county] === activeCounty)
-    // Survey Points filter (activeSurveyMatch, set via setSurveyMatchFilter):
-    // 'unmatched' shows only records with NO correlation at all (not even
-    // the partial tier — surveyMatchState() calls that 'none'), 'partial'
-    // shows only the partial-match tier — everything else about this
-    // layer/the acquisition list is unaffected, this filter only ever
-    // narrows which dots show.
-    .filter(r => activeSurveyMatch === 'all' ||
-      (activeSurveyMatch === 'unmatched' ? surveyMatchState(r) === 'none' : surveyMatchState(r) === activeSurveyMatch))
+  surveyMarkers = {};
+  // Region/County/Survey Points match filter chain — shared with the
+  // Survey Records list (see baseFilteredSurveyRecords()/
+  // getFilteredSurveyRecords()) so the map layer and the list can never
+  // show a different set of records for the same filter state. Survey
+  // Status doesn't apply here (every record in this layer is, by
+  // definition, a completed survey — the acquisition-list's
+  // surveyed/not-surveyed distinction doesn't map onto survey records
+  // themselves).
+  const scopedRecords = baseFilteredSurveyRecords();
+  const layers = scopedRecords
     .map(r => L.marker([r.lat, r.lng], {
       // pane: 'markerPane' (2026-09-12 fix) — a plain circleMarker/marker
       // defaults to the SAME pane the parcels polygons use
@@ -2185,6 +2406,11 @@ function renderSurveyPointsLayer() {
       // acquisition record, not just pop up the survey record's own info
       // in isolation — see selectSurveyRecord().
       .on('click', () => selectSurveyRecord(r)));
+  // Recorded by objectId (2026-09-14, for the Survey Records list) so a
+  // list-card click/Details button can fly to and open the popup of this
+  // exact marker — see selectSurveyRecord()/openSurveyOnlyDetail(). Indices
+  // line up because .map() preserves scopedRecords' order.
+  scopedRecords.forEach((r, i) => { surveyMarkers[r.objectId] = layers[i]; });
   surveyPointsLayerGroup = L.layerGroup(layers).addTo(map);
 }
 function popRow(label, val) {
@@ -2832,6 +3058,85 @@ async function openDetail(id) {
   document.addEventListener('keydown', sheet._keyHandler);
   loadAttachmentsInto(p);
   loadParcelInfoInto(p);
+}
+// Added 2026-09-14 — the Survey Records list's "Details" button, for a
+// survey record with NO linked acquisition property (openSurveyDetails()
+// routes straight to the existing openDetail() instead, unchanged, when a
+// linked property does exist). Reuses the same detail-sheet DOM/CSS and
+// buildSurveyDetailRows()/loadParcelInfoInto()/loadAttachmentsInto() as
+// openDetail() — those two loaders key off {id,lat,lng} and
+// {surveyed,surveyObjectId} respectively, so a small synthetic object
+// stands in for the acquisition property they normally take. Omits the
+// Acquisition Info section and the locationSuspect banner — there is no
+// acquisition record to compare this survey point against.
+function openSurveyOnlyDetail(r) {
+  _lastFocusBeforeDetail = document.activeElement;
+  const state = surveyMatchState(r);
+  const color = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
+  const label = state === 'matched' ? 'Address Match' : state === 'partial' ? 'Partial Match' : 'No Address Match';
+  const bannerDesc = state === 'matched' ? 'Address matches the acquisition list.'
+    : state === 'partial' ? 'Nearby acquisition record — address text differs.'
+    : 'No corresponding property found on the acquisition list.';
+  const bannerIcon = state === 'none'
+    ? `<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="11" fill="${color}"/><path d="M8 8l8 8M16 8l-8 8" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>`
+    : `<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="11" fill="${color}"/><path d="M7 12.5l3 3 7-7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const a = r.attrs;
+  const address = a[SURVEY_FIELDS.address] || 'Unknown address';
+  const city = a[SURVEY_FIELDS.city] || '';
+  const hasGeom = Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0);
+  const fullAddr = `${address}, ${city}, TN`.trim();
+  const addrEnc = encodeURIComponent(fullAddr || (hasGeom ? `${r.lat},${r.lng}` : ''));
+  const surveyDetailRows = buildSurveyDetailRows(a);
+  document.getElementById('detail-body').innerHTML = `
+    <div class="sheet-banner" style="background:${color}18;border:1px solid ${color}40;color:${color};">
+      ${bannerIcon}
+      <div>
+        <div class="banner-label">${escapeHtml(label)}</div>
+        <div class="banner-desc">${escapeHtml(bannerDesc)}</div>
+      </div>
+    </div>
+    <div class="sheet-header">
+      <h2 class="sheet-name" id="detail-asset-name">${escapeHtml(address)}</h2>
+      <div class="sheet-addr">${escapeHtml(city)}, TN</div>
+    </div>
+    ${kvSection('Survey Results', surveyDetailRows)}
+    <div class="sdiv"></div>
+    <div class="sec" id="parcel-sec">
+      <div class="sec-label">Parcel Info</div>
+      <div id="parcel-body" style="font-size:13px;color:var(--text3)">Loading…</div>
+    </div>
+    <div class="sdiv"></div>
+    <div class="sec" id="attachments-sec">
+      <div class="sec-label">Survey Photos</div>
+      <div id="attachments-body" style="font-size:13px;color:var(--text3)">Loading…</div>
+    </div>
+    <div class="sdiv"></div>
+    <div class="nav-btns">
+      ${addrEnc ? `<a class="nav-btn goo" href="https://maps.google.com/?q=${addrEnc}" target="_blank" rel="noopener" aria-label="Open in Google Maps">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>Google Maps
+      </a>` : ''}
+    </div>`;
+  const sheet = document.getElementById('detail-sheet');
+  sheet.removeAttribute('hidden');
+  sheet.classList.add('open');
+  setTimeout(() => { const btn = sheet.querySelector('.sheet-close-btn'); if (btn) btn.focus(); }, 50);
+  sheet._keyHandler = e => {
+    if (e.key === 'Escape') { closeDetail(); return; }
+    if (e.key !== 'Tab') return;
+    const focusables = sheet.querySelectorAll('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener('keydown', sheet._keyHandler);
+  loadAttachmentsInto({ surveyed: true, surveyObjectId: r.objectId });
+  if (hasGeom) {
+    loadParcelInfoInto({ id: 's' + r.objectId, lat: r.lat, lng: r.lng });
+  } else {
+    const box = document.getElementById('parcel-body');
+    if (box) box.innerHTML = '<div style="color:var(--text3)">No location on file for this record.</div>';
+  }
 }
 function closeDetail() {
   const sheet = document.getElementById('detail-sheet');

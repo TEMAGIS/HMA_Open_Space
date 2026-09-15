@@ -747,6 +747,111 @@ just didn't fit in 480px.
   screenshot: drawer's `getBoundingClientRect()` now reports `{x:0,
   width:420}`, flush against the list column.
 
+## Filter drawer: Survey Points moved to the top, "Survey Status" renamed
+Fixed 2026-09-14. User feedback (screenshot): "For the filters can we have
+the Survey Points at the top of the filters ... the survey status should be
+titled TN Properties Acquired." Two small changes in `buildFilterGrid()`:
+
+- The **Survey Points (map)** filter section (the All/Partial Match/No
+  Address Match row that controls which dots show on the map — see
+  `activeSurveyMatch`/`setSurveyMatchFilter()` above) now renders **first**
+  in the drawer, ahead of Status/Region/County. A field user opening Filter
+  is most often checking the survey layer's data-quality first, so that's
+  now the first thing they see rather than something scrolled/tapped past.
+- The old **"Survey Status"** label (the Surveyed/Not Surveyed/All row —
+  `activeStatus`/`setStatusFilter()`) is now titled **"TN Properties
+  Acquired"**, so it reads as its own distinct section (the acquisition
+  list itself) now that it's no longer first/assumed to be the primary
+  filter in the drawer.
+
+Purely a `buildFilterGrid()` markup/ordering change — no filter logic,
+state, or counts changed.
+
+## List toggle: browse Survey Records directly, not just the acquisition list
+Added 2026-09-14. Same user request as above continued: "can the list be of
+the survey points since those are the details that are being shown" — the
+list only ever showed acquisition properties, even though the detail sheet,
+map layer, and filter drawer all treat survey records as their own
+first-class thing. Ambiguous enough (filter the existing list by survey
+data? replace it outright? something else?) that this went through
+`AskUserQuestion` rather than guessing — the user picked **"Add a toggle to
+switch between both lists"**: keep today's acquisition-property list as the
+default, add a second mode that lists survey records instead, independent
+of any filter choice.
+
+- **`listMode`** (`'properties'` | `'surveys'`, default `'properties'`) is
+  the new piece of state, switched via a small segmented control
+  (`.list-mode-toggle`, two buttons: "TN Properties Acquired" / "Survey
+  Records") now sitting above the list-count/Filter row in `.list-controls`.
+  `setListMode()` flips it and re-runs `applyFiltersAndRender()` — it
+  doesn't reset Region/County/Survey Points/search, so switching modes mid-
+  filter keeps whatever scope was already active; only which dataset the
+  list (and its count line) renders changes. The acquisition map/markers
+  are unaffected by which mode the list is in either way.
+- **`baseFilteredSurveyRecords()`** is `renderSurveyPointsLayer()`'s old
+  inline filter chain (valid geometry + Region + County + the Survey Points
+  match filter), pulled out into its own function so the map layer and the
+  new list can never drift apart — both call it. **`getFilteredSurveyRecords()`**
+  wraps that with search-term filtering and most-recent-inspection-first
+  sorting (`inspectionDateMs()`, same null-safe pattern as the acquisition
+  list's `surveyDateMs()`) — list-only, so typing in the search box doesn't
+  also thin out the map's Survey Points layer.
+- **`renderSurveyCard(r)`** parallels `renderCard(p)`'s exact markup/CSS
+  classes (`.asset-card`, `.card-strip`, `.type-icon`, `.meta-badges`, the
+  Details button) so the two list modes look and feel like the same
+  component: color/icon/label come from `surveyMatchState(r)` (green check
+  = Address Match, blue check = Partial Match, yellow X = No Address
+  Match — same glyphs `surveyPointIcon()` already uses on the map, via
+  `SURVEY_MATCH_ICONS`), badges show inspection date, compliance status,
+  and inspector name. Cards use `data-survey-id="s<objectId>"` (the `s`
+  prefix keeps them unambiguous from acquisition cards' `data-asset-id`,
+  which is a plain property id) so `bindListHandlers()`'s existing single
+  click/keydown listeners on `#asset-list` could be extended with a second
+  branch rather than needing a whole separate event-binding function.
+- **Selecting a survey card** (`selectSurveyCard()` → `selectSurveyRecord(r)`,
+  the same function survey map-marker clicks already used) now also tracks
+  `selectedSurveyObjectId` and highlights/scrolls to that record's own list
+  card — independent of `selectedId` (the acquisition selection), so a
+  survey card and an acquisition card can each show their own highlighted
+  state at once without clobbering each other. (`selectProperty()`'s card-
+  clearing line was narrowed from `.asset-card` to `.asset-card[data-asset-id]`
+  so it no longer wipes out a survey card's highlight when a linked property
+  gets selected underneath it.) When the record has a linked acquisition
+  property, `selectSurveyRecord()` still just delegates straight into
+  `selectProperty()` as before (halo, connector line, map fly-to, its own
+  popup — unchanged). When it has **no** linked property, `selectSurveyRecord()`
+  now also flies the map to and opens the popup of that record's own marker
+  — via a new **`surveyMarkers`** lookup (objectId → Leaflet marker,
+  populated in `renderSurveyPointsLayer()` alongside the existing layer
+  build) — since there's no `selectProperty()` call to do that for it.
+- **Details button, no linked property**: `openSurveyDetails()` checks for a
+  linked acquisition property first — if one exists, it opens that
+  property's existing, unchanged detail sheet (`openDetail()`, zero new
+  code for that path) exactly as if its own card's Details button had been
+  clicked. If there's no linked property, it opens **`openSurveyOnlyDetail(r)`**
+  — a new, reduced detail view built from the same detail-sheet DOM/CSS as
+  `openDetail()`: a match-state banner (colored/labeled from
+  `surveyMatchState(r)`), the address header, `buildSurveyDetailRows()` for
+  the Survey Results section (unchanged, already record-based), Parcel Info
+  and Survey Photos sections reusing `loadParcelInfoInto()`/
+  `loadAttachmentsInto()` via a small synthetic object
+  (`{id:'s'+objectId, lat, lng}` / `{surveyed:true, surveyObjectId}` — both
+  loaders already only key off those few fields, so no changes were needed
+  to either), and a Google Maps link. Deliberately omits the Acquisition
+  Info section and the `locationSuspect` banner — there is no acquisition
+  record to compare this point against.
+- Verified with a headless-Chromium script (Playwright, real ArcGIS sign-in
+  isn't available in this environment) using a small hand-built Leaflet
+  stub (`L`/`map` fakes covering just the marker/layerGroup/flyTo/popup
+  calls this app makes) so `renderSurveyPointsLayer()`/`selectSurveyRecord()`
+  could run without a live map: confirmed the toggle renders survey cards
+  with correct counts/badges, clicking a card selects/highlights it, a
+  card's Details button opens the full acquisition detail sheet when a
+  linked property exists (checked "Acquisition Info" section is present)
+  and the reduced survey-only sheet when it doesn't (checked that section
+  is absent and the correct match-state banner shows), and toggling back to
+  "TN Properties Acquired" restores the untouched acquisition list.
+
 ## Still needed before this can go live
 - **Hosting**: `https://temagis.github.io/HMA_Open_Space/` needs a real GitHub Pages
   deployment, and that exact URL needs to be added to the AGOL app item's

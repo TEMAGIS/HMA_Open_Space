@@ -1129,7 +1129,170 @@ Record" address-comparison row in the acquisition popup, though that row
 still has its own inline equivalent check for now (not yet refactored to
 call the helper — low-priority cleanup).
 
-## Still needed before this can go live
+## Parcel popup: no more TPAD link on an empty popup
+Fixed 2026-09-15 per user report (screenshot: a parcel popup reading "No
+address/acreage data returned for this parcel." still showed a "View on
+TN Property Assessment (TPAD) →" link below it). Root cause: the parcel
+layer's field schema was never confirmed against the live service (see
+the PARCEL_FIELD_CANDIDATES comment), so the link's field lookup had a
+fallback list that included ParcelID-style fields (PARCELID/ParcelId/
+MapParcelID) alongside true GIS-link fields — and a raw parcel ID is
+present on nearly every feature, including ones with no address/acreage
+at all, so the link kept appearing even when there was nothing else to
+show. `PARCEL_FIELD_CANDIDATES.gislink` now only matches genuine
+GIS-link-named fields (GISLINK/GIS_Link/GisLink/GIS_LINK); a parcel with
+only a bare ID and no real link field now renders the popup with no link,
+same as it already did for address/city/acres.
+
+## Acquisition list: fixed "138 INDUSTRIAL DIRVE" typo
+Fixed 2026-09-15 per user report. Record `i:253` (Carthage, Smith County)
+read "138 INDUSTRIAL DIRVE" in the embedded acquisition data
+(`ACQUIRED_RAW`) — a typo of "DRIVE". Beyond just looking wrong, this
+typo actively broke survey correlation for that property: `normAddr()`'s
+street-type abbreviation table only recognizes the correctly-spelled
+"DRIVE" (→ "DR"), so "DIRVE" passed through unrecognized and
+`streetCore()` couldn't strip it as a suffix — the property's core street
+name computed as "INDUSTRIAL DIRVE" instead of "INDUSTRIAL", which is
+too different (edit distance > `CONFIG.coreFuzzyMaxEdits`) from a
+correctly-spelled survey-side "138 Industrial Dr" for even the fuzzy
+partial-match tier to catch. Corrected the address text directly in
+`ACQUIRED_RAW` rather than patching the normalizer for this one typo —
+see the note below about a systematic geocode-based QA pass for catching
+others like it across the full list.
+
+## Geocoding QA pass for the acquisition list + a "geocoded" fallback tier
+Added 2026-09-15, following the "138 INDUSTRIAL DIRVE" typo report above.
+That typo wasn't just a cosmetic problem — it silently broke BOTH the
+exact address-text tier and the fuzzy partial-match tier (the misspelled
+word wasn't recognized as a street-type suffix, so it never got stripped
+for the fuzzy core comparison either), which is exactly the kind of
+failure text-only matching can't systematically catch. Discussed the
+options and went with: run a geocoding pass over the whole acquisition
+list, and have the app also try the geocoder's standardized address as a
+fallback whenever the raw text doesn't match anything.
+
+- **`hma-acquisition-geocode.py` / `.ipynb`** (new project docs, same
+  pattern as `hma-survey-geocode.py`/`.ipynb`): since the acquisition list
+  isn't a live AGOL layer (it's the static `TN_properties_with_county_2.csv`
+  embedded as `ACQUIRED_RAW`), this script reads that CSV (a fresh export
+  is included alongside it, `TN_properties_with_county_2.csv`, reflecting
+  the current embedded data including the Industrial Drive fix), geocodes
+  every address against the ArcGIS World Geocoding Service, and writes a
+  NEW CSV (`TN_properties_with_county_2_geocoded.csv`) with `geo_address`/
+  `geo_city`/`geo_score`/`geo_distance_ft`/`geo_flag` columns added —
+  nothing is written back to any live service, and the original columns
+  are never touched. Only rows where the standardized address actually
+  differs from the source (`geo_flag == "corrected"`) are the ones worth
+  reviewing; run it from ArcGIS Online/Enterprise Notebooks like the
+  survey one, then send the output CSV back so it can be merged into
+  `ACQUIRED_RAW`.
+- **App-side fallback tier** (`correlateAll()`, `index.html`): each
+  acquisition property now optionally carries `geoAddr`/`geoCity` fields
+  (absent on every record until the script above has been run and merged
+  in). When present and different from the raw address, and the raw
+  address's exact-match tier found nothing, `correlateAll()` also probes
+  the same address index with the corrected address — tagged `'geocoded'`
+  in `matchMethods`, ranked just below a direct address hit and above
+  every distance-based tier (city-mismatch/proximity/partial). A
+  `'geocoded'` match does NOT count as a "clean" address match (see
+  `isCleanAddressMatch()`), so it shows up under the "Partial Match"
+  filter too — the whole point is to surface these for a human to
+  eventually clean up in the source list, not to quietly paper over them
+  forever.
+- Verified with a synthetic test mirroring the real Industrial Drive case:
+  with the typo and no `geoAddr`, the property stayed "Not Surveyed" (bug
+  reproduced); adding `geoAddr: "138 Industrial Dr"` and re-running
+  correlation flipped it to Surveyed via `matchMethods: ['geocoded']`,
+  with the correct computed distance and match label, and it correctly
+  appeared under the Partial Match filter. Re-ran the city-mismatch/
+  Woods-Green/Kings-Hill regression tests from the earlier fixes too — all
+  still pass unchanged.
+- **Next step**: run `hma-acquisition-geocode.py` (or the `.ipynb`) in
+  ArcGIS Notebooks and send back `TN_properties_with_county_2_geocoded.csv`
+  — the `geoAddr`/`geoCity` fields won't do anything until that's done and
+  the results get merged into `ACQUIRED_RAW`.
+
+## Survey Records list: card icons now match the map, dropped the surveyor's name
+Changed 2026-09-15 per user report (screenshot: the list showed a SOLID
+green circle w/ white check for "Address Match" and a SOLID amber circle
+w/ black X for "No Address Match" — visually its own thing, not what the
+same records look like as dots on the map). The map's `surveyPointIcon()`
+draws a WHITE circle with a colored RING and a colored check (or black X)
+— added a matching `surveyCardMatchIcon(state)` for `renderSurveyCard()`
+that reproduces that exact look (same ring colors: `STATUS_COLORS.surveyed`
+green / `SURVEY_PARTIAL_COLOR` blue / `SURVEY_NOMATCH_COLOR` amber, same
+black X for no match) as a static SVG instead of a Leaflet divIcon, so a
+card and its marker now read as the same symbol. Also removed the small
+"🧑 <inspector name>" badge that used to sit on every card — per user
+request, the card is just the match/date/compliance summary now; the
+inspector's full name is still shown in Details (unchanged —
+`buildSurveyDetailRows()` already has its own Inspector row).
+
+## Geocoding QA pass: results merged in, plus a safety gate the real data exposed
+2026-09-15. The user ran `hma-acquisition-geocode.py` in ArcGIS Notebooks
+and sent back `TN_properties_geocoded.csv` (1,300 rows). Breakdown:
+942 `matches source` (geocoder confirms the address as-is — includes
+i=253, "138 Industrial Drive", the hand-fixed typo from earlier), 17
+`low confidence` (geocoder couldn't place it confidently — left alone,
+not merged), and 341 `corrected` (standardized address differs from the
+source).
+
+Of those 341, only rows where the geocoded point landed within 1 mile of
+the acquisition list's own stored coordinate (`CONFIG.suspectLocationFeet`
+— same bar the app already uses elsewhere to flag a suspect location)
+were trusted and merged in as `geoAddr`/`geoCity` on `ACQUIRED_RAW`: 258
+rows. The other 83 were left out and saved to a new project doc,
+`TN_properties_needs_review.csv` — the geocoder found a confident,
+differently-spelled match, but far enough from the property's own point
+that trusting it automatically felt wrong (could mean the geocoder
+matched a same-named street somewhere else in the state, or — just as
+plausible — that the acquisition list's OWN coordinate for that property
+is the one that's off). One row in this set was a genuinely garbage match
+(`i=28`, "1526 LOCKHART LANE" → geocoded address literally `"Lane"`,
+~9,500 miles away) — the distance cutoff catches cases like this
+automatically, which a score-only filter (the `MIN_MATCH_SCORE` the
+script already had) didn't; the confidence score on that one was 80.76,
+just over the 80 threshold.
+
+**Real cases the merge surfaced, beyond the original "138 INDUSTRIAL
+DIRVE" report**: acquisition-list records i=863–866, four consecutive
+"WOODSGREEN DR" addresses on the same Murfreesboro street including the
+one from the earlier "1211 WOODSGREEN DR" report — the geocoder says the
+real suffix is "Rd", not "Dr", for all four. That report was originally
+fixed by the fuzzy partial-match tier (suffix-and-spacing-insensitive
+core comparison); it now also resolves through the cleaner `geocoded`
+tier, ranked higher, since the corrected address is now on file.
+
+**Distance-gating the `geocoded` tier** (`correlateAll()`): building the
+test for this exposed a real gap — the `geocoded` tier was modeled after
+the plain `address` tier (no distance limit at all, since two sides
+typing the identical full address+city is trusted regardless of
+distance). But a `geoAddr` value isn't literally what either side typed —
+it's a third, inferred address from an external geocoding service, one
+extra layer of "might be wrong" on top of the usual text-match risk. Real
+test case that caught it: a synthetic survey point 1,100 ft from "529
+KINGS HILL BLVD" (outside `partialMatchFeet`) still matched via its
+`geoAddr` fallback, purely because the corrected address text happened to
+line up exactly — clearly too loose. Added `CONFIG.geocodedMatchFeet`
+(600 ft, same radius as the partial-match tier) and gated `geoAddrHits` by
+it. Also had to back out an earlier attempt at flagging a survey record's
+own address-text-match color (`r.addressMatched`, used for the Survey
+Points map layer's green/amber coloring) via `geoAddr` — that set has no
+distance concept at all, so it bypassed the new gate entirely. Replaced
+with `r.geocodedMatched`/`r.geocodedCandidateAddr`, set inside the
+distance-gated loop, same pattern as `partialMatched`/`proximityMatched`/
+`cityMismatchMatched` — and, consistent with those three, a
+`geocoded`-only match colors as amber "partial" on the map/list, not
+green, even when it's the officially winning tier for the property. That
+fits the whole point of tagging it `'geocoded'` instead of `'address'` in
+the first place: keep it visibly flagged for review, not quietly treated
+as fully clean.
+
+Re-ran every regression test from this session's earlier fixes
+(city-mismatch, Woods Green spacing, Kings Hill fuzzy-edit-distance, the
+geocoded-fallback synthetic test, the filter-grid counts, the card-icon
+mirroring) after this change — all still pass.
+
 - **Hosting**: `https://temagis.github.io/HMA_Open_Space/` needs a real GitHub Pages
   deployment, and that exact URL needs to be added to the AGOL app item's
   (`d4YpqfdNJGpPJqsS`) Redirect URIs list.

@@ -653,6 +653,25 @@ const CONFIG = {
   // agree — see streetCore() — so it's still a fairly tight bar, not just
   // "anything nearby." Tune here if the field shows it's too tight/loose.
   partialMatchFeet: 600,
+  // A fourth tier (2026-09-15, real reported case: "412 Brook View Estates
+  // Dr" identical on both sides, region agreed, but showed up as "Not
+  // Surveyed"/"No Address Match" anyway) — the exact-match tier above
+  // requires the CITY string to agree too (correlationKey() = street +
+  // city), and that's what was actually failing here: Nashville-area
+  // addresses very often get a different city typed on the survey side
+  // (a USPS/mailing city like Old Hickory, Hermitage, Antioch, Whites
+  // Creek, etc., instead of the incorporated city, or the field just
+  // typo'd/left blank) even though it's clearly the same property. Per
+  // user: "if the address matches and the proximity is within 500 or so
+  // feet then it should be the same city" — so when the STREET address
+  // text matches exactly (city ignored) and the two points are within
+  // this many feet of each other, correlateAll() now counts it as
+  // matched regardless of what the city fields say. The distance check
+  // is what keeps this safe for a street name that happens to repeat in
+  // more than one town — an identical address text alone, statewide,
+  // would be too easy to false-positive on; requiring it to also be
+  // right next to that specific acquired-list point is not.
+  cityMismatchFeet: 500,
   // Once a property is matched to a survey record (by address and/or
   // proximity — see correlateAll()), if the survey record's own point is
   // further than this from the acquired-list's point, the acquired-list
@@ -752,15 +771,17 @@ const SURVEY_PARTIAL_COLOR = '#2563EB';
 // Survey Points (map) filter all key off, so the three stay in sync.
 // 'matched' (green) = this record's address text lines up EXACTLY with
 // something on the acquired list (r.addressMatched — a pure text-quality
-// signal). 'partial' (blue) = it correlated to a property some other way
-// — the partial-address tier (r.partialMatched) or plain proximity
-// (r.proximityMatched, see correlateAll()) — real correlations, just not
-// an exact text match, so this record is NOT "no match" even though its
-// own address text alone wouldn't have found it. 'none' (yellow X) = no
+// signal, city included). 'partial' (blue) = it correlated to a property
+// some other way — the partial-address tier (r.partialMatched), plain
+// proximity (r.proximityMatched), or an exact STREET match whose CITY
+// field didn't agree (r.cityMismatchMatched — see CONFIG.cityMismatchFeet/
+// correlateAll()) — real correlations, just not a full exact text match,
+// so this record is NOT "no match" even though its own address text alone
+// (city included) wouldn't have found it. 'none' (yellow X) = no
 // correlation to any acquired property was found at all.
 function surveyMatchState(r) {
   if (r.addressMatched) return 'matched';
-  if (r.partialMatched || r.proximityMatched) return 'partial';
+  if (r.partialMatched || r.proximityMatched || r.cityMismatchMatched) return 'partial';
   return 'none';
 }
 function regionColor(region) { return (REGIONS[region] && REGIONS[region].color) || '#5a6472'; }
@@ -1160,7 +1181,7 @@ function buildProperties() {
     lat: r.lat,
     lng: r.lng,
     surveyed: false,
-    matchMethods: [],       // subset of ['address','proximity']
+    matchMethods: [],       // subset of ['address','citymismatch','proximity','partial'] — see correlateAll()
     matchDistanceFt: null,
     locationSuspect: false, // true = this property's own lat/lng looks wrong — see CONFIG.suspectLocationFeet
     surveyRecord: null,     // the matched survey feature's attrs (best match)
@@ -1269,10 +1290,11 @@ function buildSurveyAddressIndex() {
 function correlateAll() {
   const addrIndex = buildSurveyAddressIndex();
   const geoRecords = surveyRecords.filter(r => Number.isFinite(r.lat) && Number.isFinite(r.lng) && !(r.lat === 0 && r.lng === 0));
-  // Precompute each geo-tagged survey record's { houseNum, core } once —
-  // used by the PARTIAL ADDRESS MATCH pass below, which would otherwise
-  // recompute this (a regex-heavy call) on every property x record pair.
-  geoRecords.forEach(r => { r._core = streetCore(r.street); });
+  // Precompute each geo-tagged survey record's { houseNum, core } and full
+  // normalized street text once — used by the PARTIAL ADDRESS MATCH and
+  // CITY MISMATCH passes below, which would otherwise recompute these
+  // (regex-heavy calls) on every property x record pair.
+  geoRecords.forEach(r => { r._core = streetCore(r.street); r._streetNorm = normAddr(r.street); });
   // Per-survey-record address-match flag, independent of which property (if
   // any) ends up "claiming" a given record as its best match above — used
   // to color the Survey Points map overlay (green = this record's address
@@ -1287,15 +1309,27 @@ function correlateAll() {
     const k = correlationKey(r.street, r.city);
     r.addressMatched = !!(k && k !== '@' && propAddrKeys.has(k));
     // Reset each run — re-derived below as properties claim records via
-    // the partial-match and plain-proximity tiers.
+    // the partial-match, city-mismatch, and plain-proximity tiers.
     r.partialMatched = false;
     r.proximityMatched = false;
+    r.cityMismatchMatched = false;
   });
   properties.forEach(prop => {
     const key = correlationKey(prop.address, prop.city);
     const addrHits = (key && key !== '@') ? (addrIndex.get(key) || []) : [];
     const propCore = streetCore(prop.address);
     const propCityNorm = normCity(prop.city);
+    const propStreetNorm = normAddr(prop.address);
+    // CITY MISMATCH pass (2026-09-15) — a fourth tier for a survey record
+    // whose STREET text matches this property's exactly but whose CITY
+    // doesn't (so it missed the city-qualified addrIndex above): tracks
+    // the NEAREST such candidate within CONFIG.cityMismatchFeet, same
+    // nearest-within-threshold pattern as proximity/partial below. Only
+    // matters when addrHits comes up empty — the city-qualified key
+    // already covers the case where city agrees too. Requiring the
+    // candidate to also be close by (not just a same-named street
+    // anywhere in the state) is what makes this safe.
+    let cityMismatch = null, cityMismatchFt = Infinity;
     let nearest = null, nearestFt = Infinity;
     // PARTIAL ADDRESS MATCH pass — a third, looser correlation tier for
     // cases the two checks above both miss: a survey point sitting near
@@ -1316,6 +1350,9 @@ function correlateAll() {
           normCity(r.city) === propCityNorm) {
         partial = r; partialFt = d;
       }
+      if (propStreetNorm && d <= CONFIG.cityMismatchFeet && d < cityMismatchFt && r._streetNorm === propStreetNorm) {
+        cityMismatch = r; cityMismatchFt = d;
+      }
     }
     const proxHit = nearest && nearestFt <= CONFIG.proximityMatchFeet;
     // Flag BOTH candidate records as correlated — not just whichever one
@@ -1331,39 +1368,59 @@ function correlateAll() {
     // signal was working as designed. See surveyMatchState().
     if (proxHit) nearest.proximityMatched = true;
     if (partial) partial.partialMatched = true;
+    // Flagged whenever found, same as proximityMatched/partialMatched above
+    // — regardless of whether it ends up "used" below — so the Survey
+    // Points map layer/list reflect this correlation even on a property
+    // that also had a full address+city hit.
+    if (cityMismatch) cityMismatch.cityMismatchMatched = true;
     const methods = [];
     let matched = null;
     if (addrHits.length) { methods.push('address'); matched = addrHits[0]; }
+    // City mismatch — the survey's STREET text matches this property's
+    // exactly and it's close by, just the CITY string doesn't agree. Only
+    // ever "used" as the match when there's no city-qualified address hit
+    // already (a strictly higher-confidence version of the same signal),
+    // but otherwise ranks above plain proximity — an exact address-text
+    // match nearby is more certain than just "something nearby."
+    if (!matched && cityMismatch) {
+      methods.push('citymismatch');
+      matched = cityMismatch;
+    }
     if (proxHit) {
       methods.push('proximity');
       // Prefer the proximity match's own record as the "matched" survey
-      // record shown in the detail sheet only when there was no address
-      // hit at all — an address hit is the higher-confidence signal.
+      // record shown in the detail sheet only when there was no
+      // higher-confidence hit already — an address or city-mismatch hit
+      // is always the higher-confidence signal.
       if (!matched) matched = nearest;
     }
     // Partial is the lowest-confidence tier — only used as a last resort
-    // when neither the exact address-text match nor plain proximity
-    // found anything, so it never overrides a higher-confidence match.
+    // when nothing else above found anything, so it never overrides a
+    // higher-confidence match.
     if (!matched && partial) {
       methods.push('partial');
       matched = partial;
     }
     // matchDistanceFt is always the real distance between the acquisition
-    // point and whichever record was matched (address, proximity, or
-    // partial) — not just set when proximity was the deciding method —
-    // as long as that record has valid, non-zero geometry to measure from.
+    // point and whichever record was matched (address, city-mismatch,
+    // proximity, or partial) — not just set when proximity was the
+    // deciding method — as long as that record has valid, non-zero
+    // geometry to measure from.
     let matchDistanceFt = null;
     if (matched && Number.isFinite(matched.lat) && Number.isFinite(matched.lng) && !(matched.lat === 0 && matched.lng === 0)) {
-      matchDistanceFt = (matched === nearest) ? nearestFt : (matched === partial ? partialFt : haversineFeet(prop.lat, prop.lng, matched.lat, matched.lng));
+      matchDistanceFt = (matched === nearest) ? nearestFt
+        : (matched === partial) ? partialFt
+        : (matched === cityMismatch) ? cityMismatchFt
+        : haversineFeet(prop.lat, prop.lng, matched.lat, matched.lng);
     }
     // A large matchDistanceFt can only happen for an address-only match —
-    // a proximity match is, by definition, within CONFIG.proximityMatchFeet
-    // (150 ft), and a partial match within CONFIG.partialMatchFeet (600 ft),
-    // of the acquired point. So this flag only ever fires when the address
-    // text lines up but the two points are genuinely far apart — the
-    // acquired-list coordinate is the more likely culprit, since a
-    // surveyed property's point comes from an inspector actually standing
-    // there.
+    // proximity, partial, and city-mismatch matches are each, by
+    // definition, within their own CONFIG.*Feet threshold (150/600/500 ft
+    // respectively) of the acquired point. So this flag only ever fires
+    // when the address (and city) text lines up but the two points are
+    // genuinely far apart — the acquired-list coordinate is the more
+    // likely culprit, since a surveyed property's point comes from an
+    // inspector actually standing there.
     const locationSuspect = matchDistanceFt !== null && matchDistanceFt > CONFIG.suspectLocationFeet;
 
     prop.surveyed = methods.length > 0;
@@ -1764,7 +1821,9 @@ function renderSurveyCard(r) {
   const state = surveyMatchState(r);
   const color = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
   const icon = state === 'matched' ? STATUS_ICONS.surveyed : state === 'partial' ? SURVEY_MATCH_ICONS.partial : SURVEY_MATCH_ICONS.unmatched;
-  const label = state === 'matched' ? 'Address Match' : state === 'partial' ? 'Partial Match' : 'No Address Match';
+  const label = state === 'matched' ? 'Address Match'
+    : state === 'partial' ? (r.cityMismatchMatched ? 'Address Match, City Differs' : 'Partial Match')
+    : 'No Address Match';
   const a = r.attrs;
   const address = a[SURVEY_FIELDS.address] || 'Unknown address';
   const city = a[SURVEY_FIELDS.city] || '';
@@ -2423,13 +2482,26 @@ function buildSurveyPointPopupHtml(r) {
   const rows = [
     popRow('Inspected', fmtDateOnly(a[SURVEY_FIELDS.inspectionDate])),
     popRow('Inspector', a[SURVEY_FIELDS.inspectorName]),
+    // City added 2026-09-15 — a real reported case ("412 Brook View
+    // Estates Dr", identical address text both sides) showed as "No
+    // Address Match" purely because the submitted city differed from the
+    // acquisition list's, and there was previously no way to see that
+    // from this popup at all. See CONFIG.cityMismatchFeet/correlateAll().
+    popRow('City', a[SURVEY_FIELDS.city]),
     popRow('Region', a[SURVEY_FIELDS.region]),
   ].join('');
   const state = surveyMatchState(r);
   const matchColor = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
+  // A record that's 'partial' purely because of the city-mismatch tier
+  // gets its own, more specific label — otherwise this reads as the same
+  // generic "partial match" as the house-number/street-core tier, which
+  // is a different (and less reassuring) situation: here the FULL address
+  // text already lines up exactly, only the city field doesn't agree.
   const matchLabel = state === 'matched' ? 'Address matches acquired list'
-    : state === 'partial' ? 'Partial match — nearby acquisition record, address text differs'
-    : 'No address match on acquired list';
+    : state === 'partial'
+      ? (r.cityMismatchMatched ? 'Address matches acquired list — submitted city differs'
+          : 'Partial match — nearby acquisition record, address text differs')
+      : 'No address match on acquired list';
   return `<div class="pop">
       <div class="pop-type" style="color:#003a8c">Survey Record</div>
       <div class="pop-name">${escapeHtml(a[SURVEY_FIELDS.address] || 'Unknown address')}</div>
@@ -2951,14 +3023,23 @@ function buildSurveyDetailRows(attrs) {
 function matchMethodLabel(p) {
   if (!p.surveyed) return '';
   const hasAddr = p.matchMethods.includes('address');
+  const hasCityMismatch = p.matchMethods.includes('citymismatch');
   const hasProx = p.matchMethods.includes('proximity');
   const hasPartial = p.matchMethods.includes('partial');
   if (hasAddr && hasProx) return 'address text and location proximity';
   if (hasAddr) return 'address text';
+  // City mismatch (2026-09-15, CONFIG.cityMismatchFeet): the survey's
+  // street address text is an exact match, and it's close by — just the
+  // submitted city doesn't agree with the acquisition list's. 'address'
+  // and 'citymismatch' never both appear in matchMethods (address is the
+  // strictly-higher-confidence version of the same signal — see
+  // correlateAll()), so no combined case is needed for that pair.
+  if (hasCityMismatch && hasProx) return 'address text and location proximity (submitted city differs from the acquisition list)';
+  if (hasCityMismatch) return 'address text — house number and street name line up exactly, but the submitted city differs from the acquisition list';
   if (hasProx) return 'location proximity';
   // Partial only ever fires alone (see correlateAll() — it's a last-
-  // resort tier, skipped whenever address or proximity already matched),
-  // so there's no combination case to handle here.
+  // resort tier, skipped whenever a higher-confidence tier already
+  // matched), so there's no combination case to handle here.
   if (hasPartial) return 'a close, partial address match — house number and street name agree, but the address text doesn’t line up exactly';
   return '';
 }
@@ -3073,10 +3154,15 @@ function openSurveyOnlyDetail(r) {
   _lastFocusBeforeDetail = document.activeElement;
   const state = surveyMatchState(r);
   const color = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
-  const label = state === 'matched' ? 'Address Match' : state === 'partial' ? 'Partial Match' : 'No Address Match';
+  const label = state === 'matched' ? 'Address Match'
+    : state === 'partial' ? (r.cityMismatchMatched ? 'Address Match, City Differs' : 'Partial Match')
+    : 'No Address Match';
   const bannerDesc = state === 'matched' ? 'Address matches the acquisition list.'
-    : state === 'partial' ? 'Nearby acquisition record — address text differs.'
-    : 'No corresponding property found on the acquisition list.';
+    : state === 'partial'
+      ? (r.cityMismatchMatched
+          ? 'Address text matches an acquisition-list property exactly (house number and street name), but the city submitted here differs from the acquisition list.'
+          : 'Nearby acquisition record — address text differs.')
+      : 'No corresponding property found on the acquisition list.';
   const bannerIcon = state === 'none'
     ? `<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="11" fill="${color}"/><path d="M8 8l8 8M16 8l-8 8" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>`
     : `<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="11" fill="${color}"/><path d="M7 12.5l3 3 7-7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;

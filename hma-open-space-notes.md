@@ -852,6 +852,91 @@ of any filter choice.
   is absent and the correct match-state banner shows), and toggling back to
   "TN Properties Acquired" restores the untouched acquisition list.
 
+## Fourth correlation tier: city mismatch (address matches, city doesn't)
+Added 2026-09-15. User feedback (screenshots): "412 Brook View Estates Dr"
+showed up as a "No Address Match" yellow-X survey point right next to its
+own acquisition-list marker showing "Not Surveyed" — same address text on
+both sides, same region (Middle) — with no obvious explanation, since the
+survey point's popup didn't even display its own city field to compare
+against. "i'm not sure why these don't match."
+
+Root cause: the exact-match tier (`correlationKey()`) requires the
+normalized STREET text **and** the CITY string to both agree — and for
+Nashville-area addresses in particular, the city field on a survey
+submission very often doesn't match the acquisition list's (a USPS/mailing
+city like Old Hickory, Hermitage, Antioch, Whites Creek, etc. gets typed
+instead of the incorporated city, or the field is blank/mis-typed). The
+partial-match tier (`streetCore()`) also requires city agreement, so it
+couldn't rescue this either — only plain GPS proximity (150 ft) could, and
+in this case the two points were apparently far enough apart that even that
+missed it.
+
+Asked the user how to handle this via `AskUserQuestion` (visibility-only
+vs. also changing "Surveyed" status vs. a uniqueness-based version of the
+latter) — the user's own answer supplied the actual rule to use: **"if the
+address matches and the proximity is within 500 or so feet then it should
+be the same city"** — i.e., trust the address text over the city label
+when the two points are demonstrably the same physical spot.
+
+- **`CONFIG.cityMismatchFeet: 500`** — new threshold, alongside
+  `proximityMatchFeet` (150) and `partialMatchFeet` (600).
+- **`correlateAll()`** now precomputes `r._streetNorm = normAddr(r.street)`
+  for every geo-tagged survey record (same precompute-once pattern as
+  `r._core` for the partial tier) and, per property, tracks the nearest
+  survey record whose `_streetNorm` matches the property's own
+  `normAddr(address)` **exactly** and is within `CONFIG.cityMismatchFeet` —
+  city ignored entirely for this check. Only ever consulted (and only ever
+  becomes the property's official match) when the city-qualified exact
+  tier came up empty — that's a strictly higher-confidence version of the
+  same signal, so this never overrides it. New method tag: `'citymismatch'`
+  in `prop.matchMethods`, ranked **above** plain proximity but **below**
+  the full address+city tier (an exact address-text match nearby is more
+  certain than just "something nearby" with no text agreement at all).
+  The distance requirement is what keeps this safe — an identical street
+  address with no distance check at all would be too easy to false-positive
+  on for a repeated street name somewhere else in the state; requiring it
+  to also be right next to *this* acquired-list point is not.
+- **`r.cityMismatchMatched`** (new, alongside `r.partialMatched`/
+  `r.proximityMatched`) is flagged on the survey record whenever this tier
+  finds a candidate — regardless of whether it ends up "used" as the
+  official match — same pattern as the other two flags, so the map/list
+  coloring reflects every real correlation. `surveyMatchState()` now folds
+  it into the blue "partial" bucket alongside the other two.
+- **More specific labeling for this exact case** (rather than reusing the
+  generic "partial match" wording, which reads as "the address text didn't
+  quite line up" — misleading here, since it lined up exactly): the map
+  popup (`buildSurveyPointPopupHtml`), the Survey Records list card
+  (`renderSurveyCard`), and the survey-only detail view
+  (`openSurveyOnlyDetail`) all now check `r.cityMismatchMatched` and show
+  "Address matches acquired list — submitted city differs" (or the card's
+  short form, "Address Match, City Differs") instead. The detail sheet's
+  "Matched By" line (`matchMethodLabel()`) does the same for a *property*
+  matched this way: "address text — house number and street name line up
+  exactly, but the submitted city differs from the acquisition list."
+- **Survey Record popup now also shows the survey's own City** (it
+  previously only showed Inspected/Inspector/Region) — the missing piece
+  that made this bug impossible to diagnose from the map in the first
+  place; now a city mismatch like this is visible at a glance even before
+  reading the match-state badge.
+- Verified with a headless-Chromium script exercising `correlateAll()`
+  directly against the real acquired-list record for "412 Brook View
+  Estates Dr" (Nashville, Davidson County): (a) same street text, city
+  "Old Hickory", ~330 ft away → now matches via `citymismatch`, blue/
+  partial state, "Surveyed"; (b) same setup but ~2,200 ft away (outside
+  `CONFIG.cityMismatchFeet`) → correctly stays unmatched, confirming the
+  distance safeguard actually holds; (c) same street text AND same city,
+  far away → unchanged, still matches via the original full-confidence
+  `address` tier regardless of distance (that tier never had a distance
+  requirement, by design — see the correlation-tier docs above).
+- Deliberately left untouched: `r.addressMatched` (used by the Survey
+  Report export's "Matches Acquisition List" column) still requires the
+  city to agree too — that field is specifically meant as a pure
+  address-*and*-city text-quality signal for that report, independent of
+  which property (if any) ends up correlating to a record; a city mismatch
+  like this one is exactly the kind of data-quality issue that column
+  exists to surface for the exported spreadsheet, so loosening it here
+  would defeat its purpose.
+
 ## Still needed before this can go live
 - **Hosting**: `https://temagis.github.io/HMA_Open_Space/` needs a real GitHub Pages
   deployment, and that exact URL needs to be added to the AGOL app item's

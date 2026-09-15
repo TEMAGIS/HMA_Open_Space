@@ -1307,3 +1307,56 @@ mirroring) after this change — all still pass.
 - **Attachments**: survey-record photos are fetched the same way PREDS Summary does
   (`queryAttachments`), but this wasn't confirmed against a live token — worth a check
   once deployed.
+
+## Survey Records list card: label text wrapping + clearer "no match" wording
+Fixed 2026-09-15 per user report (screenshot: "No Address Match" ran into
+the address title on the same line — `.card-type-label` was a fixed
+92px, `white-space: nowrap`, so any label wider than that column just
+overflowed sideways into "153 Industrial Dr" instead of wrapping).
+`.card-type-label` now wraps (`white-space: normal`, `word-break:
+break-word`, tightened `line-height`) instead of forcing one line —
+affects the same label on the acquisition-list card too, but those
+labels ("Surveyed"/"Not Surveyed") are short enough that it's a no-op
+there. Also reworded the "No Address Match" state to "No Address Match
+with Acquisitions" (both `renderSurveyCard()` and the matching label in
+`openSurveyOnlyDetail()`'s Details view, kept in sync) — spells out what
+it's being compared against, which matters more now that it wraps onto
+its own lines rather than reading as one short phrase next to the icon.
+
+## New URL parameter: `?mode=surveyonly` — Survey Points only, no acquisition list
+Added 2026-09-15 per user request: a URL parameter for embedding/sharing
+a version of the app scoped to just the survey layer, for an audience
+that shouldn't see (or doesn't need) the acquisition list at all. Same
+"`?key=value` flag" pattern as the existing `?layout=full` (Experience
+Builder embed sizing, top of the file).
+
+Append `?mode=surveyonly` to the URL and:
+- **Acquisition markers never render on the map** (`refreshMarkers()`
+  returns immediately) — the Survey Points layer, parcels layer, and
+  everything else map-related is unaffected.
+- **The "TN Properties Acquired" list/toggle is hidden** — the
+  `.list-mode-toggle` bar (`startApp()`) is hidden entirely rather than
+  left as a button that would flip to a list the rest of the UI is
+  hiding, and `setListMode()` refuses to leave `'surveys'` as a backstop
+  even if something else calls it directly.
+- **The "TN Properties Acquired" filter row is omitted** from the filter
+  drawer (`buildFilterGrid()`) — Survey Points, Region, and County stay,
+  since Region/County still scope the survey layer too.
+
+Deliberately NOT changed: `buildProperties()` and `correlateAll()` still
+run exactly as normal, so match state (green/amber/red, all four+
+correlation tiers, the geocoded fallback) and every count still work
+correctly — this parameter only hides the acquisition-list UI, it
+doesn't change what a survey point's color means or skip any scoring.
+Verified with a Playwright test that compares normal-mode vs.
+`?mode=surveyonly` side by side: acquisition marker count goes from
+1,300 (all properties) to 0, the filter drawer and toggle both disappear,
+and a matched property still correctly shows `matchMethods` and
+`surveyed: true` under the hood in both modes. Also caught and fixed a
+real bug in the same pass: `.list-mode-toggle` sets its own `display:
+flex`, which silently overrides the `hidden` attribute's default
+`display: none` unless a `.list-mode-toggle[hidden] { display: none; }`
+override exists too (same trap `#app[hidden]` already has its own
+`!important` override for) — added that rule alongside it.
+
+Example: `https://temagis.github.io/HMA_Open_Space/?mode=surveyonly`

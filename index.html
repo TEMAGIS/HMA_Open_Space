@@ -245,6 +245,7 @@
      dataset the rest of the panel (count text, cards, Details sheet)
      currently reflects. */
   .list-mode-toggle { display: flex; gap: 4px; padding: 8px 16px 0; }
+  .list-mode-toggle[hidden] { display: none; }
   .list-mode-btn {
     flex: 1; text-align: center; padding: 7px 8px; border-radius: var(--radius-sm);
     border: 1.5px solid var(--border); background: var(--surface); color: var(--text2);
@@ -276,7 +277,7 @@
   .card-name { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.2px; min-width: 0; }
   .card-cityzip { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; margin-bottom: 0; }
   .card-county { font-size: 11px; color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-  .card-type-label { font-size: 13px; font-weight: 700; letter-spacing: -0.2px; flex-shrink: 0; white-space: nowrap; width: 92px; }
+  .card-type-label { font-size: 13px; font-weight: 700; letter-spacing: -0.2px; line-height: 1.15; flex-shrink: 0; white-space: normal; word-break: break-word; width: 92px; }
   .dist-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; color: #003a8c; background: #dce6fb; padding: 3px 8px; border-radius: 6px; flex-shrink: 0; white-space: nowrap; }
   .dist-pill-warn { color: #B54708; background: #FCEEE3; }
   .meta-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
@@ -1237,6 +1238,18 @@ let renderedList = [];
 // to the LEFT button in the toggle (see the list-mode-toggle HTML) so the
 // default and the visual first-position agree.
 let listMode = 'surveys';
+// Added 2026-09-15 per user request — append ?mode=surveyonly to the URL
+// (same "?key=value flag" pattern as ?layout=full at the top of the
+// file) to run the app scoped to just the Survey Points: acquisition
+// markers never render on the map, the "TN Properties Acquired" list/
+// toggle and its filter row are hidden, and the list is locked to Survey
+// Records. Everything ELSE stays exactly as-is: buildProperties() and
+// correlateAll() still run normally, so match state (green/amber/red) and
+// scoring still work — this only hides the acquisition side of the UI,
+// it doesn't change what a survey point's color means. See
+// refreshMarkers(), buildFilterGrid(), setListMode(), and the
+// SURVEY_ONLY_MODE checks in startApp() below.
+const SURVEY_ONLY_MODE = new URLSearchParams(window.location.search).get('mode') === 'surveyonly';
 let renderedSurveyList = [];
 let selectedSurveyObjectId = null;
 let surveyMarkers = {};             // survey point Leaflet markers, keyed by objectId — populated in
@@ -1772,11 +1785,17 @@ function buildFilterGrid() {
   // renamed to "TN Properties Acquired" to read as its own distinct
   // section (the acquisition list) now that it isn't first/default-
   // assumed to be the primary filter.
+  // SURVEY_ONLY_MODE (?mode=surveyonly): the "TN Properties Acquired"
+  // section is entirely about the acquisition list, which this mode
+  // hides everywhere else (map markers, list/toggle) — omit its
+  // buf-label + status-row here too rather than showing filter controls
+  // for a list the user can't see or reach.
   document.getElementById('filter-grid').innerHTML = `
     <div class="buf-label">Survey Points (map)</div>
     <div class="fg-row surveymatch-row" role="group" aria-label="Filter survey points on the map by address match">${surveyMatchBtns}</div>
+    ${SURVEY_ONLY_MODE ? '' : `
     <div class="buf-label">TN Properties Acquired</div>
-    <div class="fg-row status-row" role="group" aria-label="Filter by survey status">${statusBtns}</div>
+    <div class="fg-row status-row" role="group" aria-label="Filter by survey status">${statusBtns}</div>`}
     <div class="buf-label">Region</div>
     <div class="fg-row region-row" role="radiogroup" aria-label="Filter by region">${regionBtns}</div>
     <div class="buf-label">County${activeRegion !== 'all' ? ` (${REGIONS[activeRegion].label})` : ''}</div>
@@ -1922,6 +1941,10 @@ function applyFiltersAndRender() {
 // shows. The map/markers are unaffected either way.
 function setListMode(mode) {
   if (mode !== 'properties' && mode !== 'surveys') return;
+  // SURVEY_ONLY_MODE (?mode=surveyonly): the toggle button for
+  // 'properties' is hidden (see startApp()), but guard here too in case
+  // anything else ever calls this directly — locked to 'surveys'.
+  if (SURVEY_ONLY_MODE && mode !== 'surveys') return;
   if (listMode === mode) return;
   listMode = mode;
   document.getElementById('list-mode-properties').classList.toggle('active', mode === 'properties');
@@ -2025,9 +2048,14 @@ function renderSurveyCard(r) {
   const state = surveyMatchState(r);
   const color = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
   const icon = surveyCardMatchIcon(state);
+  // Fixed 2026-09-15 per user report (screenshot: "No Address Match" ran
+  // into the address title next to it on a longer card) — .card-type-label
+  // now wraps instead of a fixed-width single line (see CSS), and this
+  // label spells out what it's comparing against, since "No Address
+  // Match" alone reads ambiguously once it's wrapped onto its own lines.
   const label = state === 'matched' ? 'Address Match'
     : state === 'partial' ? (r.cityMismatchMatched ? 'Address Match, City Differs' : 'Partial Match')
-    : 'No Address Match';
+    : 'No Address Match with Acquisitions';
   const a = r.attrs;
   const address = a[SURVEY_FIELDS.address] || 'Unknown address';
   const city = a[SURVEY_FIELDS.city] || '';
@@ -2319,6 +2347,11 @@ function refreshMarkers() {
   if (!clusterGroup) return;
   clusterGroup.clearLayers();
   markers = {};
+  // SURVEY_ONLY_MODE (?mode=surveyonly): never render acquisition
+  // markers — properties/renderedList are still computed normally (see
+  // the comment on SURVEY_ONLY_MODE above), this just skips putting them
+  // on the map.
+  if (SURVEY_ONLY_MODE) return;
   const layers = [];
   // Bug fix 2026-09-14: this used to loop over `properties` (every
   // acquired property, unfiltered) instead of `renderedList` (the result
@@ -3255,9 +3288,11 @@ function openSurveyOnlyDetail(r) {
   _lastFocusBeforeDetail = document.activeElement;
   const state = surveyMatchState(r);
   const color = state === 'matched' ? STATUS_COLORS.surveyed : state === 'partial' ? SURVEY_PARTIAL_COLOR : STATUS_COLORS.unsurveyed;
+  // Same label text as the Survey Records list card (renderSurveyCard()) —
+  // kept in sync so Details reads the same as the card it was opened from.
   const label = state === 'matched' ? 'Address Match'
     : state === 'partial' ? (r.cityMismatchMatched ? 'Address Match, City Differs' : 'Partial Match')
-    : 'No Address Match';
+    : 'No Address Match with Acquisitions';
   const bannerDesc = state === 'matched' ? 'Address matches the acquisition list.'
     : state === 'partial'
       ? (r.cityMismatchMatched
@@ -3396,6 +3431,16 @@ async function startApp() {
   bindListHandlers();
   initMap();
   revealApp();
+  // SURVEY_ONLY_MODE (?mode=surveyonly): nothing to toggle to (the
+  // "TN Properties Acquired" list is never shown in this mode — see
+  // refreshMarkers()/buildFilterGrid()), so hide the toggle bar entirely
+  // rather than leave a button that would flip to an acquisition list the
+  // rest of the UI is hiding. listMode is already 'surveys' by default
+  // and setListMode() refuses to leave it in this mode as a backstop.
+  if (SURVEY_ONLY_MODE) {
+    const toggle = document.querySelector('.list-mode-toggle');
+    if (toggle) toggle.hidden = true;
+  }
   // The "open in a new tab" escape hatch (see report-btn-wrap in the
   // filter drawer) needs the page's own URL — set once here rather than
   // hardcoded, so it works the same whether this is hosted standalone or
